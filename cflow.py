@@ -5,6 +5,11 @@ cflow --main who_am_i whoami.c
 
 cflow --main=filter_frame --depth=2 libavfilter/vf_showinfo.c
 
+列出 所有 commit log，一行一个 commit id
+git --no-pager log --pretty=oneline
+
+查看一个 tag 对应的 commit id
+git rev-list -n 1 $TAG
 
 
 
@@ -53,6 +58,9 @@ to_df_file = "FFmpeg_caller_callee.csv"
 # read a function code from a c file.
 # https://stackoverflow.com/questions/55078713/extract-function-code-from-c-sourcecode-file-with-python
 def process_file(filename, line_num):
+    if not os.path.exists(filename):
+        return ""
+
     print("opening " + filename + " on line " + str(line_num))
 
     code = ""
@@ -74,7 +82,10 @@ def process_file(filename, line_num):
 
                 if cnt_braket == 0 and found_start == True:
                     found_end = True
+                    print("== len of code: %d" % len(code))
                     return code
+    print("== len of code: %d" % len(code))
+    return code
 
 def parse_cflow_line(line):
     p1 = re.compile(r'.*?[(][)]', re.S)  # func name
@@ -116,6 +127,19 @@ def get_space_num(line):
 # 【5】然后，最这些 caller 和 callee 提取代码，即为 code_after, caller_after, callee_after
 """
 def find_caller_callee(commit, functions):
+    changed_funcs = {}
+    p1 = re.compile(r'[^ ]*?[(]', re.S)
+    for ff in functions:
+        filename, b = ff.split(":::")
+        res = re.findall(p1, b)
+        if len(res) > 0:
+            func_name = res[0]+")"
+            if filename not in changed_funcs.keys():
+                changed_funcs[filename] = [func_name]
+            else:
+                changed_funcs[filename].append(func_name)
+    print("changed_funcs:")
+    print(changed_funcs)
 
 
 
@@ -124,7 +148,7 @@ def find_caller_callee(commit, functions):
     x = p.read()
 
     c_files = x.strip().split("\n")
-    cmd = "cflow --omit-arguments "
+    cmd = "cflow --omit-arguments --no-main --depth=2"
     paths = []
     for filename in c_files:
         pp = os.path.dirname(filename)
@@ -153,7 +177,7 @@ def find_caller_callee(commit, functions):
     for line in x.strip().split("\n"):
         func_name, file_name, file_loc = parse_cflow_line(line)
         cur_name = file_name + ":::" + func_name
-        print("cur name: %s" % cur_name)
+        # print("cur name: %s" % cur_name)
         sp_num = get_space_num(line)
 
         if flag_start and sp_num > flag_start_sp_n:
@@ -164,14 +188,15 @@ def find_caller_callee(commit, functions):
                     callee_list.append(callee)
         else:
             flag_start = False
-            if cur_name in functions and not cur_name in visited:
+            if file_name!= "" and file_name in changed_funcs.keys() and func_name in changed_funcs[file_name] and not cur_name in visited:
+                print("== bingo")
                 code = process_file(file_name, int(file_loc))
                 code_list.append(code)
                 visited.append(cur_name)
                 flag_start = True
                 flag_start_sp_n = sp_num
 
-    cmd += " --reverse"
+    cmd += " --reverse "
     p = os.popen(cmd)
     x = p.read()
     to_file = "%s/%s_caller.txt" % (show_log_savepath, commit)
@@ -199,7 +224,8 @@ def find_caller_callee(commit, functions):
                     caller_list.append(caller)
         else:
             flag_start = False
-            if cur_name in functions and not cur_name in visited:
+            if file_name != "" and file_name in changed_funcs.keys() and func_name in changed_funcs[file_name] and not cur_name in visited:
+                print("== bingo caller, cur_name: %s" % cur_name)
                 visited.append(cur_name)
                 flag_start = True
                 flag_start_sp_n = sp_num
@@ -257,7 +283,7 @@ if __name__ == '__main__':
     changed_func_num_list = []
 
     parser = argparse.ArgumentParser(description='Test for argparse')
-    parser.add_argument('--log_file', help='log_file', type=str, default='cflow.log')
+    parser.add_argument('--log_file', help='log_file', type=str, default='../log/ffmpeg.log')
     args = parser.parse_args()
 
     pp = os.path.dirname(args.log_file)
@@ -338,14 +364,17 @@ if __name__ == '__main__':
 
 
         # git reset 到本次修改前
+        cmd = "git reset --hard HEAD^"
+        p = os.popen(cmd)
+        x = p.read()
 
         # 重复 【2】- 【5】，即为 code_before, caller_before, callee_before
-        code_before_list.append("")
-        callee_before_list.append("")
-        caller_before_list.append("")
+        code, callee, caller = find_caller_callee(commit+"_before", changed_func_names)
+        code_before_list.append(code)
+        callee_before_list.append(callee)
+        caller_before_list.append(caller)
 
         logger.info("=== done, commit %s" % commit)
-        break
 
     to_data = {
         'commit_id': commit_id_list,
