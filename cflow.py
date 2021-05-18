@@ -1,6 +1,7 @@
+
 """
 
- -- 假设：每一个 版本号 修复一个 vulnerability --
+ -- 对于每个 vulnerability，找到最早的 commit^1 和 最晚 的 commit，做对比 --
 
 
 
@@ -46,6 +47,7 @@ git --no-pager diff ed188f6dcdf0935c939ed813cf8745d50742014b 02f909dc24b1f05cfbb
 @Author  : Wenbo
 """
 
+
 import os
 import re
 import time
@@ -53,6 +55,7 @@ import logging
 import argparse
 import pandas as pd
 import json
+
 
 data_path = "../data2"
 ffmpeg_commits_file = data_path + "/ffmpeg_commits_in_order_with_fixed_tag.csv"
@@ -62,7 +65,9 @@ show_log_savepath = data_path + "/FFmpeg"
 vul_distribution_file = data_path + "FFmpeg_vul_distributions.csv"
 to_df_file = "FFmpeg_caller_callee.csv"
 
+
 json_savepath = data_path + "/FFmpeg_jsons"
+
 
 
 # read a function code from a c file.
@@ -80,7 +85,7 @@ def process_file(filename, line_num):
 
     with open(filename, "r") as f:
         for i, line in enumerate(f):
-            if (i >= (line_num - 1)):
+            if(i >= (line_num - 1)):
                 code += line
 
                 if line.count("{") > 0:
@@ -97,13 +102,12 @@ def process_file(filename, line_num):
     print("== len of code: %d" % len(code))
     return code
 
-
 def parse_cflow_line(line):
     p1 = re.compile(r'.*?[(][)]', re.S)  # func name
     p2 = re.compile(r'at .*?[.]c:.*?>', re.S)  # filename and locations
 
     func_name = ""
-    file_name = ""
+    file_name  = ""
     file_loc = "0"
 
     res = re.findall(p1, line)
@@ -119,16 +123,14 @@ def parse_cflow_line(line):
 
     return func_name, file_name, file_loc
 
-
 def get_space_num(line):
     n = 0
     for c in line:
-        if c == " ":
-            n += 1
+        if c==" ":
+            n+=1
         else:
             break
     return n
-
 
 """
 # 【2】列举所有 c 文件 --> 列举所有的文件路径
@@ -139,8 +141,6 @@ def get_space_num(line):
 
 # 【5】然后，最这些 caller 和 callee 提取代码，即为 code_after, caller_after, callee_after
 """
-
-
 def find_caller_callee(commit, functions):
     changed_funcs = {}
     p1 = re.compile(r'[^ ]*?[(]', re.S)
@@ -148,13 +148,15 @@ def find_caller_callee(commit, functions):
         filename, b = ff.split(":::")
         res = re.findall(p1, b)
         if len(res) > 0:
-            func_name = res[0] + ")"
+            func_name = res[0]+")"
             if filename not in changed_funcs.keys():
                 changed_funcs[filename] = [func_name]
             else:
                 changed_funcs[filename].append(func_name)
     # print("changed_funcs:")
     # print(changed_funcs)
+
+
 
     cmd = 'find . -name "*.c"'
     p = os.popen(cmd)
@@ -170,7 +172,11 @@ def find_caller_callee(commit, functions):
             # print(pp)
             cmd = cmd + pp + "/*.c "
     p = os.popen(cmd)
-    x = p.read()
+    try:
+        x = p.read()
+    except:
+        x = ""
+        logger.error("=== p.read() error")
 
     to_file = "%s/%s_callee.txt" % (show_log_savepath, commit)
     with open(to_file, "w") as fw:
@@ -186,6 +192,7 @@ def find_caller_callee(commit, functions):
 
     flag_start = False
     flag_start_sp_n = 0
+
 
     function_list = []
     function_detail = {}
@@ -205,14 +212,13 @@ def find_caller_callee(commit, functions):
         else:
             if len(function_detail.keys()) > 0:
                 function_detail['callees'] = callee_list
-                function_list.append(function_detail)
+                function_list.append(function_detail )
 
             flag_start = False
             function_detail = {}
             callee_list = []
 
-            if file_name != "" and file_name in changed_funcs.keys() and func_name in changed_funcs[
-                file_name] and not cur_name in visited:
+            if file_name!= "" and file_name in changed_funcs.keys() and func_name in changed_funcs[file_name] and not cur_name in visited:
                 print("== bingo")
                 code = process_file(file_name, int(file_loc))
                 function_detail = {
@@ -230,7 +236,12 @@ def find_caller_callee(commit, functions):
 
     cmd += " --reverse "
     p = os.popen(cmd)
-    x = p.read()
+    try:
+        x = p.read()
+    except:
+        x = ""
+        logger.error("=== p.read() error")
+
     to_file = "%s/%s_caller.txt" % (show_log_savepath, commit)
     with open(to_file, "w") as fw:
         fw.write(x)
@@ -259,14 +270,14 @@ def find_caller_callee(commit, functions):
         else:
             if len(function_detail.keys()) > 0:
                 function_detail['callers'] = caller_list
-                function_list.append(function_detail)
+                function_list.append(function_detail )
+
 
             flag_start = False
             function_detail = {}
             callee_list = []
 
-            if file_name != "" and file_name in changed_funcs.keys() and func_name in changed_funcs[
-                file_name] and not cur_name in visited:
+            if file_name != "" and file_name in changed_funcs.keys() and func_name in changed_funcs[file_name] and not cur_name in visited:
                 print("== bingo caller, cur_name: %s" % cur_name)
                 visited.append(cur_name)
                 flag_start = True
@@ -282,6 +293,7 @@ def find_caller_callee(commit, functions):
                     'callees': []
                 }
 
+
     # code = "\n---code---\n".join(code_list)
     # callee = "\n----callee----\n".join(callee_list)
     # caller = "\n----caller----\n".join(caller_list)
@@ -289,11 +301,14 @@ def find_caller_callee(commit, functions):
 
     return function_list
 
-
 def get_all_files_func():
     cmd = 'find . -name "*.c"'
     p = os.popen(cmd)
-    x = p.read()
+    try:
+        x = p.read()
+    except:
+        x = ""
+        logger.error("=== p.read() error")
 
     c_files = x.strip().split("\n")
     total_c_files = len(c_files)
@@ -303,7 +318,12 @@ def get_all_files_func():
 
         cmd = "cflow --omit-arguments %s" % filename
         p = os.popen(cmd)
-        x = p.read()
+        try:
+            x = p.read()
+        except:
+            x = ""
+            logger.error("=== p.read() error")
+
 
         p1 = re.compile(r'.*?[(][)]', re.S)  # func name
         p2 = re.compile(r'at .*?[.]c:.*?>', re.S)  # filename and locations
@@ -321,7 +341,6 @@ def get_all_files_func():
         total_c_funcs += len(funcs)
 
     return total_c_files, total_c_funcs
-
 
 if __name__ == '__main__':
     commit_id_list = []
@@ -363,38 +382,66 @@ if __name__ == '__main__':
     df = df.fillna('')
     print(df.head())
 
+    # 提取 每个 vulnerbility 的 commits
+    cve_commits = {}
     for index, row in df.iterrows():
+        cve_id = row['cve_id']
+        commit_id = row['commit_id']
+        if cve_id != '':
+            if cve_id in cve_commits.keys():
+                cve_commits[ cve_id ].append(commit_id)
+            else:
+                cve_commits[ cve_id ] = [commit_id]
 
-        if row['cve_id'] == '':
+    for cve_id in cve_commits.keys():
+        to_json_file = json_savepath + "/%s.json" % cve_id
+        if os.path.exists( to_json_file ):
+            logger.info("=== %s exists" % to_json_file)
             continue
 
-        print("now:", index, row['cve_id'])
-        logger.info("=== now: %d ,cve_id: %s" % (index, row['cve_id']))
 
-        cve_id = row['cve_id']
-        fixed_tag = row['fixed_tag']
-        affected_tag = row['affected_tag']
+        print("now:", index, cve_id)
+        logger.info("=== now: %d ,cve_id: %s" % (index, cve_id) )
+
+        commits = cve_commits[cve_id]
+
+        fixed_tag = commits[0]
+        affected_tag = commits[-1]
 
         # 1. git reset
 
         # git reset
         cmd = "git reset --hard %s" % fixed_tag
         p = os.popen(cmd)
-        x = p.read()
+        try:
+            x = p.read()
+        except:
+            x = ""
+            logger.error("=== p.read() error")
 
         # 统计所有的 file 数量，和 func 数量
         total_c_files, total_c_funcs = get_all_files_func()
 
+
         # git show diff
         # cmd = "git --no-pager show %s" % commit
-        cmd = " git --no-pager diff %s %s" % (fixed_tag, affected_tag)
+        cmd = " git --no-pager diff %s %s^1" % (fixed_tag, affected_tag)
+
+
         p = os.popen(cmd)
-        x = p.read()
+        try:
+            x = p.read()
+        except:
+            x = ""
+            logger.error("=== p.read() error, cmd: %s" % cmd)
+
+
         to_show_file = "%s/%s_git_diff_.txt" % (show_log_savepath, fixed_tag)
         with open(to_show_file, "w") as f:
             f.write(x)
         print("saved to", to_show_file)
         logger.info("saved to %s" % to_show_file)
+
 
         # 【1】找出 修改的 filename 和 func name，顺便计算 vul， non-vul distribution
         changed_files_num = 0
@@ -412,21 +459,27 @@ if __name__ == '__main__':
                 else:
                     is_c_file = False
 
+
             if is_c_file and line.find("@@") > -1:
                 arr = line.strip().split("@@")
                 func_name = "./" + filename + ":::" + arr[-1].strip()
                 # print(arr[-1].strip())
                 if func_name not in changed_func_names:
                     changed_func_names.append(func_name)
-                    print("changed func: %s" % func_name)
+                    print("changed func: %s" % func_name )
                     changed_func_num += 1
+
 
         functions_after = find_caller_callee(cve_id, changed_func_names)
 
         # git reset 到修复前
-        cmd = "git reset --hard %s" % affected_tag
+        cmd = "git reset --hard %s^1" % affected_tag
         p = os.popen(cmd)
-        x = p.read()
+        try:
+            x = p.read()
+        except:
+            x = ""
+            logger.error("=== p.read() error")
 
         functions_before = find_caller_callee(cve_id, changed_func_names)
 
@@ -453,7 +506,7 @@ if __name__ == '__main__':
         }
 
         # print(json.dumps(to_data))
-        to_json_file = json_savepath + "/%s.json" % cve_id
+
         with open(to_json_file, "w") as fw:
             fw.write(json.dumps(to_data))
         print("saved to %s" % to_json_file)
@@ -461,6 +514,7 @@ if __name__ == '__main__':
 
         # if index > 100:
         #     break
+
 
         # commit_id_list.append(commit)
         # total_c_files_list.append(total_c_files)
@@ -475,6 +529,9 @@ if __name__ == '__main__':
         # callee_after_list.append(callee)
         # caller_after_list.append(caller)
 
+
+
+
         # 重复 【2】- 【5】，即为 code_before, caller_before, callee_before
         # code, callee, caller = find_caller_callee(commit+"_before", changed_func_names)
         # code_before_list.append(code)
@@ -482,6 +539,9 @@ if __name__ == '__main__':
         # caller_before_list.append(caller)
 
         # logger.info("=== done, commit %s" % commit)
+
+
+
 
     # to_data = {
     #     'commit_id': commit_id_list,
