@@ -1,7 +1,9 @@
 
 """
 
- -- 对于每个 vulnerability，找到最早的 commit^1 和 最晚 的 commit，做对比 --
+May 17, 2021:
+ - 对于每个 vulnerability，找出每个 function，在每个 commit 前后的对比。记录 caller、callee。如果有重复出现的 function，取最早的 commit 修改之前的版本，和最后的 commit 修改之后的版本，做对比。
+ - 忽略 test 下的文件。
 
 
 
@@ -9,7 +11,33 @@ git --no-pager show e43a0a232dbf6d3c161823c2e07c52e76227a1bc
 
 cflow --main who_am_i whoami.c
 
-cflow --main=filter_frame --depth=2 libavfilter/vf_showinfo.c
+
+
+列出 每个 function 的 caller callee
+When ‘--all’ is used twice, graphs for all global functions (whether top-level or not) will be displayed.
+
+e.g.
+
+    cflow test_cflow.c --depth=3 --all --all
+
+will output:
+
+```
+main() <int main () at test_cflow.c:27>:
+    funcA() <int funcA () at test_cflow.c:21>:
+        funcB() <int funcB () at test_cflow.c:15>:
+funcA() <int funcA () at test_cflow.c:21>:
+    funcB() <int funcB () at test_cflow.c:15>:
+        funcC() <int funcC () at test_cflow.c:10>:
+funcB() <int funcB () at test_cflow.c:15>:
+    funcC() <int funcC () at test_cflow.c:10>:
+        funcD() <int funcD () at test_cflow.c:5>
+funcC() <int funcC () at test_cflow.c:10>:
+    funcD() <int funcD () at test_cflow.c:5>
+funcD() <int funcD () at test_cflow.c:5>
+```
+
+
 
 列出 所有 commit log，一行一个 commit id
 git --no-pager log --pretty=oneline
@@ -58,6 +86,8 @@ import json
 
 
 data_path = "../data2"
+data_type = "ffmpeg"
+
 ffmpeg_commits_file = data_path + "/ffmpeg_commits_in_order_with_fixed_tag.csv"
 # df_file = data_path + "/FFmpeg.csv"
 
@@ -67,6 +97,16 @@ to_df_file = "FFmpeg_caller_callee.csv"
 
 
 json_savepath = data_path + "/FFmpeg_jsons"
+
+
+class Function:
+    def __init__(self, func_name, file_name="", file_loc=0, code=""):
+        self.func_name = func_name
+        self.file_name = file_name
+        self.file_loc = file_loc
+        self.code = code
+        self.callees = []
+        self.callers = []
 
 
 
@@ -83,7 +123,8 @@ def process_file(filename, line_num):
     found_start = False
     found_end = False
 
-    with open(filename, "r") as f:
+    # encoding = "ISO-8859-1" for xye server
+    with open(filename, "r" ) as f:
         for i, line in enumerate(f):
             if(i >= (line_num - 1)):
                 code += line
@@ -132,6 +173,60 @@ def get_space_num(line):
             break
     return n
 
+
+
+def _recurse_tree(parent, depth, source, c_type=0):
+    last_line = source.readline().replace("\t","    ").rstrip()
+    while last_line:
+        tabs = get_space_num(last_line)
+        if tabs < depth:
+            break
+        # node = last_line.strip()
+        func_name, file_name, file_loc = parse_cflow_line(last_line.strip())
+        # code 先设置为空，后面再补充
+        code = ""
+        sub_func = Function(func_name, file_name, file_loc, code)
+
+        if tabs >= depth:
+            if parent is not None:
+                # print("%s: %s" %(parent, node))
+                if c_type==0:
+                    parent.callees.append(sub_func)
+                else:
+                    parent.callers.append(sub_func)
+            last_line = _recurse_tree(sub_func, tabs+1, source, c_type)
+    return last_line
+
+def recurse_to_dict(func, changed_func_names, depth):
+    dd = {
+        "func_name": func.func_name,
+        "file_name": func.file_name,
+        "file_loc": func.file_loc,
+
+        "code": func.code,
+        "callers":[],
+        "callees":[]
+    }
+    if len(func.callees) > 0:
+        for ff in func.callees:
+            # print("==", depth, ff.func_name, changed_func_names)
+            if depth == 0 and changed_func_names is not None and ff.file_name!= "" and ff.file_name in changed_func_names.keys() and ff.func_name in changed_func_names[ff.file_name]:
+                ff.code = process_file(ff.file_name, int(ff.file_loc))
+                dd['callees'].append(recurse_to_dict(ff, changed_func_names, depth + 1))
+            if depth > 0:
+                ff.code = process_file(ff.file_name, int(ff.file_loc))
+                dd['callees'].append(recurse_to_dict(ff, changed_func_names, depth + 1))
+
+    if len(func.callers) > 0:
+        for ff in func.callers:
+            if depth == 0 and changed_func_names is not None and ff.file_name!= "" and ff.file_name in changed_func_names.keys() and ff.func_name in changed_func_names[ff.file_name]:
+                ff.code = process_file(ff.file_name, int(ff.file_loc))
+                dd['callers'].append(recurse_to_dict(ff, changed_func_names, depth + 1))
+            if depth > 0:
+                ff.code = process_file(ff.file_name, int(ff.file_loc))
+                dd['callers'].append(recurse_to_dict(ff, changed_func_names, depth + 1))
+    return dd
+
 """
 # 【2】列举所有 c 文件 --> 列举所有的文件路径
 
@@ -141,7 +236,8 @@ def get_space_num(line):
 
 # 【5】然后，最这些 caller 和 callee 提取代码，即为 code_after, caller_after, callee_after
 """
-def find_caller_callee(commit, functions):
+def find_caller_callee(commit, functions, data_type="ffmpeg"):
+    logger.info("=== find_caller_callee")
     changed_funcs = {}
     p1 = re.compile(r'[^ ]*?[(]', re.S)
     for ff in functions:
@@ -163,7 +259,10 @@ def find_caller_callee(commit, functions):
     x = p.read()
 
     c_files = x.strip().split("\n")
-    cmd = "cflow --omit-arguments --no-main --depth=2"
+
+
+    # callees
+    cmd = "cflow "
     paths = []
     for filename in c_files:
         pp = os.path.dirname(filename)
@@ -171,6 +270,9 @@ def find_caller_callee(commit, functions):
             paths.append(pp)
             # print(pp)
             cmd = cmd + pp + "/*.c "
+    cmd = cmd + " --omit-arguments --depth=3 --all --all"
+    logger.info("cmd: %s" % cmd)
+
     p = os.popen(cmd)
     try:
         x = p.read()
@@ -178,63 +280,20 @@ def find_caller_callee(commit, functions):
         x = ""
         logger.error("=== p.read() error")
 
-    to_file = "%s/%s_callee.txt" % (show_log_savepath, commit)
-    with open(to_file, "w") as fw:
+    to_callee_file = "%s/%s_callee.txt" % (show_log_savepath, commit)
+    with open(to_callee_file, "w") as fw:
         fw.write(x)
-    print("saved to", to_file)
-    logger.info("saved to %s" % to_file)
+    print("saved to", to_callee_file)
+    logger.info("saved to %s" % to_callee_file)
 
-    # find callee
-    code_list = []
-    callee_list = []
-    visited = []
-    visited_callee = []
-
-    flag_start = False
-    flag_start_sp_n = 0
+    func_callee = Function("root_callee")
+    with open(to_callee_file) as inFile:
+        _recurse_tree(func_callee, 0, inFile, 0)
 
 
-    function_list = []
-    function_detail = {}
-
-    for line in x.strip().split("\n"):
-        func_name, file_name, file_loc = parse_cflow_line(line)
-        cur_name = file_name + ":::" + func_name
-        # print("cur name: %s" % cur_name)
-        sp_num = get_space_num(line)
-
-        if flag_start and sp_num > flag_start_sp_n:
-            if not cur_name in visited_callee:
-                visited_callee.append(cur_name)
-                if file_name != "":
-                    callee = process_file(file_name, int(file_loc))
-                    callee_list.append(callee)
-        else:
-            if len(function_detail.keys()) > 0:
-                function_detail['callees'] = callee_list
-                function_list.append(function_detail )
-
-            flag_start = False
-            function_detail = {}
-            callee_list = []
-
-            if file_name!= "" and file_name in changed_funcs.keys() and func_name in changed_funcs[file_name] and not cur_name in visited:
-                print("== bingo")
-                code = process_file(file_name, int(file_loc))
-                function_detail = {
-                    'file_name': file_name,
-                    'file_loc': file_loc,
-                    'func_name': func_name,
-                    'code': code,
-                    'callers': [],
-                    'callees': []
-                }
-                # code_list.append(code)
-                visited.append(cur_name)
-                flag_start = True
-                flag_start_sp_n = sp_num
-
+    # callers
     cmd += " --reverse "
+    logger.info("cmd: %s" % cmd)
     p = os.popen(cmd)
     try:
         x = p.read()
@@ -242,64 +301,139 @@ def find_caller_callee(commit, functions):
         x = ""
         logger.error("=== p.read() error")
 
-    to_file = "%s/%s_caller.txt" % (show_log_savepath, commit)
-    with open(to_file, "w") as fw:
+    to_caller_file = "%s/%s_caller.txt" % (show_log_savepath, commit)
+    with open(to_caller_file, "w") as fw:
         fw.write(x)
-    print("saved to", to_file)
-    logger.info("saved to %s" % to_file)
+    print("saved to", to_caller_file)
+    logger.info("saved to %s" % to_caller_file)
 
-    caller_list = []
-    visited = []
-    visited_caller = []
-    flag_start = False
-    flag_start_sp_n = 0
+    func_caller = Function("root_caller")
+    with open(to_caller_file) as inFile:
+        _recurse_tree(func_caller, 0, inFile, 1)
 
-    function_detail = {}
+    func_callee_dict = recurse_to_dict(func_callee, changed_funcs, 0)
+    func_caller_dict = recurse_to_dict(func_caller, changed_funcs, 0)
 
-    for line in x.strip().split("\n"):
-        func_name, file_name, file_loc = parse_cflow_line(line)
-        cur_name = file_name + ":::" + func_name
-        sp_num = get_space_num(line)
-
-        if flag_start and sp_num > flag_start_sp_n:
-            if not cur_name in visited_caller:
-                visited_caller.append(cur_name)
-                if file_name != "":
-                    caller = process_file(file_name, int(file_loc))
-                    caller_list.append(caller)
-        else:
-            if len(function_detail.keys()) > 0:
-                function_detail['callers'] = caller_list
-                function_list.append(function_detail )
+    return [func_callee_dict, func_caller_dict]
 
 
-            flag_start = False
-            function_detail = {}
-            callee_list = []
+    # # find callee
+    # code_list = []
+    # callee_list = []
+    # visited = []
+    # visited_callee = []
 
-            if file_name != "" and file_name in changed_funcs.keys() and func_name in changed_funcs[file_name] and not cur_name in visited:
-                print("== bingo caller, cur_name: %s" % cur_name)
-                visited.append(cur_name)
-                flag_start = True
-                flag_start_sp_n = sp_num
-
-                code = process_file(file_name, int(file_loc))
-                function_detail = {
-                    'file_name': file_name,
-                    'file_loc': file_loc,
-                    'func_name': func_name,
-                    'code': code,
-                    'callers': [],
-                    'callees': []
-                }
+    # flag_start = False
+    # flag_start_sp_n = 0
 
 
-    # code = "\n---code---\n".join(code_list)
-    # callee = "\n----callee----\n".join(callee_list)
-    # caller = "\n----caller----\n".join(caller_list)
-    # return code, callee, caller
+    # function_list = []
+    # function_detail = {}
 
-    return function_list
+    # for line in x.strip().split("\n"):
+    #     func_name, file_name, file_loc = parse_cflow_line(line)
+    #     cur_name = file_name + ":::" + func_name
+    #     # print("cur name: %s" % cur_name)
+    #     sp_num = get_space_num(line)
+
+    #     if flag_start and sp_num > flag_start_sp_n:
+    #         if not cur_name in visited_callee:
+    #             visited_callee.append(cur_name)
+    #             if file_name != "":
+    #                 callee = process_file(file_name, int(file_loc))
+    #                 callee_list.append(callee)
+    #     else:
+    #         if len(function_detail.keys()) > 0:
+    #             function_detail['callees'] = callee_list
+    #             function_list.append(function_detail )
+
+    #         flag_start = False
+    #         function_detail = {}
+    #         callee_list = []
+
+    #         if file_name!= "" and file_name in changed_funcs.keys() and func_name in changed_funcs[file_name] and not cur_name in visited:
+    #             print("== bingo")
+    #             code = process_file(file_name, int(file_loc))
+    #             function_detail = {
+    #                 'file_name': file_name,
+    #                 'file_loc': file_loc,
+    #                 'func_name': func_name,
+    #                 'code': code,
+    #                 'callers': [],
+    #                 'callees': []
+    #             }
+    #             # code_list.append(code)
+    #             visited.append(cur_name)
+    #             flag_start = True
+    #             flag_start_sp_n = sp_num
+
+    # cmd += " --reverse "
+    # logger.info("cmd: %s" % cmd)
+    # p = os.popen(cmd)
+    # try:
+    #     x = p.read()
+    # except:
+    #     x = ""
+    #     logger.error("=== p.read() error")
+
+    # to_file = "%s/%s_caller.txt" % (show_log_savepath, commit)
+    # with open(to_file, "w") as fw:
+    #     fw.write(x)
+    # print("saved to", to_file)
+    # logger.info("saved to %s" % to_file)
+
+    # caller_list = []
+    # visited = []
+    # visited_caller = []
+    # flag_start = False
+    # flag_start_sp_n = 0
+
+    # function_detail = {}
+
+    # for line in x.strip().split("\n"):
+    #     func_name, file_name, file_loc = parse_cflow_line(line)
+    #     cur_name = file_name + ":::" + func_name
+    #     sp_num = get_space_num(line)
+
+    #     if flag_start and sp_num > flag_start_sp_n:
+    #         if not cur_name in visited_caller:
+    #             visited_caller.append(cur_name)
+    #             if file_name != "":
+    #                 caller = process_file(file_name, int(file_loc))
+    #                 caller_list.append(caller)
+    #     else:
+    #         if len(function_detail.keys()) > 0:
+    #             function_detail['callers'] = caller_list
+    #             function_list.append(function_detail )
+
+
+    #         flag_start = False
+    #         function_detail = {}
+    #         callee_list = []
+
+    #         if file_name != "" and file_name in changed_funcs.keys() and func_name in changed_funcs[file_name] and not cur_name in visited:
+    #             print("== bingo caller, cur_name: %s" % cur_name)
+    #             visited.append(cur_name)
+    #             flag_start = True
+    #             flag_start_sp_n = sp_num
+
+    #             code = process_file(file_name, int(file_loc))
+    #             function_detail = {
+    #                 'file_name': file_name,
+    #                 'file_loc': file_loc,
+    #                 'func_name': func_name,
+    #                 'code': code,
+    #                 'callers': [],
+    #                 'callees': []
+    #             }
+
+
+    # # code = "\n---code---\n".join(code_list)
+    # # callee = "\n----callee----\n".join(callee_list)
+    # # caller = "\n----caller----\n".join(caller_list)
+    # # return code, callee, caller
+
+    # return function_list
 
 def get_all_files_func():
     cmd = 'find . -name "*.c"'
@@ -317,6 +451,7 @@ def get_all_files_func():
         funcs = []
 
         cmd = "cflow --omit-arguments %s" % filename
+        # logger.info("cmd: %s" % cmd)
         p = os.popen(cmd)
         try:
             x = p.read()
@@ -399,110 +534,111 @@ if __name__ == '__main__':
             logger.info("=== %s exists" % to_json_file)
             continue
 
-
         print("now:", index, cve_id)
         logger.info("=== now: %d ,cve_id: %s" % (index, cve_id) )
 
         commits = cve_commits[cve_id]
+        commit_functions = []
 
-        fixed_tag = commits[0]
-        affected_tag = commits[-1]
+        for commit in commits:
 
-        # 1. git reset
+            # 1. git reset
 
-        # git reset
-        cmd = "git reset --hard %s" % fixed_tag
-        p = os.popen(cmd)
-        try:
-            x = p.read()
-        except:
-            x = ""
-            logger.error("=== p.read() error")
+            # git reset
+            cmd = "git reset --hard %s" % commit
+            logger.info("cmd: %s" % cmd)
+            p = os.popen(cmd)
+            try:
+                x = p.read()
+            except:
+                x = ""
+                logger.error("=== p.read() error")
 
-        # 统计所有的 file 数量，和 func 数量
-        total_c_files, total_c_funcs = get_all_files_func()
-
-
-        # git show diff
-        # cmd = "git --no-pager show %s" % commit
-        cmd = " git --no-pager diff %s %s^1" % (fixed_tag, affected_tag)
+            # 统计所有的 file 数量，和 func 数量
+            total_c_files, total_c_funcs = get_all_files_func()
 
 
-        p = os.popen(cmd)
-        try:
-            x = p.read()
-        except:
-            x = ""
-            logger.error("=== p.read() error, cmd: %s" % cmd)
+            # git show diff
+            cmd = "git --no-pager show %s" % commit
+            # cmd = " git --no-pager diff %s %s^1" % (commit, affected_tag)
+
+            logger.info("cmd: %s" % cmd)
+            p = os.popen(cmd)
+            try:
+                x = p.read()
+            except:
+                x = ""
+                logger.error("=== p.read() error, cmd: %s" % cmd)
 
 
-        to_show_file = "%s/%s_git_diff_.txt" % (show_log_savepath, fixed_tag)
-        with open(to_show_file, "w") as f:
-            f.write(x)
-        print("saved to", to_show_file)
-        logger.info("saved to %s" % to_show_file)
+            # to_show_file = "%s/%s_git_diff_.txt" % (show_log_savepath, commit)
+            # with open(to_show_file, "w") as f:
+            #     f.write(x)
+            # print("saved to", to_show_file)
+            # logger.info("saved to %s" % to_show_file)
 
 
-        # 【1】找出 修改的 filename 和 func name，顺便计算 vul， non-vul distribution
-        changed_files_num = 0
-        changed_func_num = 0
+            # 【1】找出 修改的 filename 和 func name （计算 vul， non-vul distribution）
+            changed_files_num = 0
+            changed_func_num = 0
 
-        changed_func_names = []
-        is_c_file = False
-        for line in x.strip().split("\n"):
-            loc = line.find("+++ b/")
-            if loc > -1:
-                filename = line[6:].strip()
-                if filename[-2:] == '.c':
-                    changed_files_num += 1
-                    is_c_file = True
-                else:
-                    is_c_file = False
+            changed_func_names = []
+            is_c_file = False
+            for line in x.strip().split("\n"):
+                loc = line.find("+++ b/")
+                if loc > -1:
+                    filename = line[6:].strip()
+                    not_test = True
+                    if data_type == "ffmpeg" and (filename.find("/tests/") > -1 or filename.find("/doc/") > -1):
+                        not_test = False
 
 
-            if is_c_file and line.find("@@") > -1:
-                arr = line.strip().split("@@")
-                func_name = "./" + filename + ":::" + arr[-1].strip()
-                # print(arr[-1].strip())
-                if func_name not in changed_func_names:
-                    changed_func_names.append(func_name)
-                    print("changed func: %s" % func_name )
-                    changed_func_num += 1
+                    if not_test and filename[-2:] == '.c':
+                        changed_files_num += 1
+                        is_c_file = True
+                    else:
+                        is_c_file = False
 
 
-        functions_after = find_caller_callee(cve_id, changed_func_names)
+                if is_c_file and line.find("@@") > -1:
+                    arr = line.strip().split("@@")
+                    func_name = "./" + filename + ":::" + arr[-1].strip()
+                    # print(arr[-1].strip())
+                    if func_name not in changed_func_names:
+                        changed_func_names.append(func_name)
+                        print("changed func: %s" % func_name )
+                        changed_func_num += 1
 
-        # git reset 到修复前
-        cmd = "git reset --hard %s^1" % affected_tag
-        p = os.popen(cmd)
-        try:
-            x = p.read()
-        except:
-            x = ""
-            logger.error("=== p.read() error")
 
-        functions_before = find_caller_callee(cve_id, changed_func_names)
+            functions_after = find_caller_callee(cve_id, changed_func_names)
+
+            # git reset 到修复前
+            cmd = "git reset --hard %s^1" % commit
+            logger.info("cmd: %s" % cmd)
+            p = os.popen(cmd)
+            try:
+                x = p.read()
+            except:
+                x = ""
+                logger.error("=== p.read() error")
+
+            functions_before = find_caller_callee(cve_id, changed_func_names)
+
+            commit_functions.append({
+                "commit_id": commit,
+
+                'total_c_files': total_c_files,
+                'total_c_funcs': total_c_funcs,
+                'changed_files_num': changed_files_num,
+                'changed_func_num': changed_func_num,
+
+                "before": functions_before,
+                "after": functions_after
+            })
 
         to_data = {
             'cve_id': cve_id,
-            'affected_tag': affected_tag,
-            'fixed_tag': fixed_tag,
-
-            'total_c_files': total_c_files,
-            'total_c_funcs': total_c_funcs,
-            'changed_files_num': changed_files_num,
-            'changed_func_num': changed_func_num,
-
-            'functions_after': functions_after,
-            'functions_before': functions_before
-
-            # 'code_after': code_after_list,
-            # 'callee_after': callee_after_list,
-            # 'caller_after': caller_after_list,
-
-            # 'code_before': code_before_list,
-            # 'callee_before': callee_before_list,
-            # 'caller_before': caller_before_list,
+            'functions': commit_functions,
         }
 
         # print(json.dumps(to_data))
@@ -512,53 +648,7 @@ if __name__ == '__main__':
         print("saved to %s" % to_json_file)
         logger.info("saved to %s" % to_json_file)
 
+        # break
+
         # if index > 100:
         #     break
-
-
-        # commit_id_list.append(commit)
-        # total_c_files_list.append(total_c_files)
-        # total_c_funcs_list.append(total_c_funcs)
-        # changed_files_num_list.append(changed_files_num)
-        # changed_func_num_list.append(changed_func_num)
-
-        # vul_distributions.append( [total_c_files, total_c_funcs, changed_files_num, changed_func_num] )
-
-        # code, callee, caller = find_caller_callee(commit, changed_func_names)
-        # code_after_list.append(code)
-        # callee_after_list.append(callee)
-        # caller_after_list.append(caller)
-
-
-
-
-        # 重复 【2】- 【5】，即为 code_before, caller_before, callee_before
-        # code, callee, caller = find_caller_callee(commit+"_before", changed_func_names)
-        # code_before_list.append(code)
-        # callee_before_list.append(callee)
-        # caller_before_list.append(caller)
-
-        # logger.info("=== done, commit %s" % commit)
-
-
-
-
-    # to_data = {
-    #     'commit_id': commit_id_list,
-
-    #     'total_c_files': total_c_files_list,
-    #     'total_c_funcs': total_c_funcs_list,
-    #     'changed_files_num': changed_files_num_list,
-    #     'changed_func_num': changed_func_num_list,
-
-    #     'code_after': code_after_list,
-    #     'callee_after': callee_after_list,
-    #     'caller_after': caller_after_list,
-
-    #     'code_before': code_before_list,
-    #     'callee_before': callee_before_list,
-    #     'caller_before': caller_before_list,
-    # }
-    # to_df = pd.DataFrame(data=to_data)
-    # to_df.to_csv(to_df_file, sep=',', index=None)
-
