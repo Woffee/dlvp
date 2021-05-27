@@ -91,7 +91,7 @@ data_type = "ffmpeg"
 ffmpeg_commits_file = data_path + "/ffmpeg_commits_in_order_with_fixed_tag.csv"
 # df_file = data_path + "/FFmpeg.csv"
 
-show_log_savepath = data_path + "/FFmpeg"
+show_log_savepath = data_path + "/FFmpeg_tmp"
 vul_distribution_file = data_path + "FFmpeg_vul_distributions.csv"
 to_df_file = "FFmpeg_caller_callee.csv"
 
@@ -270,21 +270,16 @@ def find_caller_callee(commit, functions, data_type="ffmpeg"):
             paths.append(pp)
             # print(pp)
             cmd = cmd + pp + "/*.c "
-    cmd = cmd + " --omit-arguments --depth=3 --all --all"
-    logger.info("cmd: %s" % cmd)
-
-    p = os.popen(cmd)
-    try:
-        x = p.read()
-    except:
-        x = ""
-        logger.error("=== p.read() error")
 
     to_callee_file = "%s/%s_callee.txt" % (show_log_savepath, commit)
-    with open(to_callee_file, "w") as fw:
-        fw.write(x)
+    cmd = cmd + " --omit-arguments --depth=3 --all --all"
+
+    logger.info("cmd: %s > %s" % (cmd, to_callee_file) )
+    p = os.popen(cmd + " > " + to_callee_file)
+    x = p.read()
+
     print("saved to", to_callee_file)
-    logger.info("saved to %s" % to_callee_file)
+
 
     func_callee = Function("root_callee")
     with open(to_callee_file) as inFile:
@@ -292,18 +287,13 @@ def find_caller_callee(commit, functions, data_type="ffmpeg"):
 
 
     # callers
-    cmd += " --reverse "
-    logger.info("cmd: %s" % cmd)
-    p = os.popen(cmd)
-    try:
-        x = p.read()
-    except:
-        x = ""
-        logger.error("=== p.read() error")
-
     to_caller_file = "%s/%s_caller.txt" % (show_log_savepath, commit)
-    with open(to_caller_file, "w") as fw:
-        fw.write(x)
+
+    cmd += " --reverse "
+    logger.info("cmd: %s > %s" % (cmd, to_caller_file) )
+    p=os.popen(cmd + " > " + to_caller_file)
+    x = p.read()
+
     print("saved to", to_caller_file)
     logger.info("saved to %s" % to_caller_file)
 
@@ -313,8 +303,15 @@ def find_caller_callee(commit, functions, data_type="ffmpeg"):
 
     func_callee_dict = recurse_to_dict(func_callee, changed_funcs, 0)
     func_caller_dict = recurse_to_dict(func_caller, changed_funcs, 0)
+    logger.info("=== len of  func_callee_dict['callees']: %d" % len( func_callee_dict['callees']))
+    logger.info("=== len of  func_callee_dict['callers']: %d" % len( func_callee_dict['callers']))
+    logger.info("=== len of  func_caller_dict['callees']: %d" % len( func_caller_dict['callees']))
+    logger.info("=== len of  func_caller_dict['callers']: %d" % len( func_caller_dict['callers']))
 
-    return [func_callee_dict, func_caller_dict]
+    d1 = func_callee_dict['callees']
+    d2 = func_caller_dict['callers']
+
+    return d1+d2
 
 
     # # find callee
@@ -632,8 +629,8 @@ if __name__ == '__main__':
                 'changed_files_num': changed_files_num,
                 'changed_func_num': changed_func_num,
 
-                "before": functions_before,
-                "after": functions_after
+                "functions_before": functions_before,
+                "functions_after": functions_after
             })
 
         to_data = {
