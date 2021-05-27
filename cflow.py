@@ -1,5 +1,10 @@
-
 """
+May 27, 2021:
+    - 整个流程：
+        1 先爬所有的 cve 和 对应的 comiit，然后 cve 和 commit 一一对应存起来
+        2 获取每一个 project 的 commit 历史，然后对 1 中的结果进行排序
+        3 用 cflow 获取每一个 commit 前后的 callee 和 caller
+
 
 May 17, 2021:
  - 对于每个 vulnerability，找出每个 function，在每个 commit 前后的对比。记录 caller、callee。如果有重复出现的 function，取最早的 commit 修改之前的版本，和最后的 commit 修改之后的版本，做对比。
@@ -75,7 +80,6 @@ git --no-pager diff ed188f6dcdf0935c939ed813cf8745d50742014b 02f909dc24b1f05cfbb
 @Author  : Wenbo
 """
 
-
 import os
 import re
 import time
@@ -83,20 +87,7 @@ import logging
 import argparse
 import pandas as pd
 import json
-
-
-data_path = "../data2"
-data_type = "ffmpeg"
-
-ffmpeg_commits_file = data_path + "/ffmpeg_commits_in_order_with_fixed_tag.csv"
-# df_file = data_path + "/FFmpeg.csv"
-
-show_log_savepath = data_path + "/FFmpeg_tmp"
-vul_distribution_file = data_path + "FFmpeg_vul_distributions.csv"
-to_df_file = "FFmpeg_caller_callee.csv"
-
-
-json_savepath = data_path + "/FFmpeg_jsons"
+import urllib
 
 
 class Function:
@@ -107,7 +98,6 @@ class Function:
         self.code = code
         self.callees = []
         self.callers = []
-
 
 
 # read a function code from a c file.
@@ -124,9 +114,9 @@ def process_file(filename, line_num):
     found_end = False
 
     # encoding = "ISO-8859-1" for xye server
-    with open(filename, "r" ) as f:
+    with open(filename, "r") as f:
         for i, line in enumerate(f):
-            if(i >= (line_num - 1)):
+            if (i >= (line_num - 1)):
                 code += line
 
                 if line.count("{") > 0:
@@ -143,12 +133,13 @@ def process_file(filename, line_num):
     print("== len of code: %d" % len(code))
     return code
 
+
 def parse_cflow_line(line):
     p1 = re.compile(r'.*?[(][)]', re.S)  # func name
     p2 = re.compile(r'at .*?[.]c:.*?>', re.S)  # filename and locations
 
     func_name = ""
-    file_name  = ""
+    file_name = ""
     file_loc = "0"
 
     res = re.findall(p1, line)
@@ -164,19 +155,19 @@ def parse_cflow_line(line):
 
     return func_name, file_name, file_loc
 
+
 def get_space_num(line):
     n = 0
     for c in line:
-        if c==" ":
-            n+=1
+        if c == " ":
+            n += 1
         else:
             break
     return n
 
 
-
 def _recurse_tree(parent, depth, source, c_type=0):
-    last_line = source.readline().replace("\t","    ").rstrip()
+    last_line = source.readline().replace("\t", "    ").rstrip()
     while last_line:
         tabs = get_space_num(last_line)
         if tabs < depth:
@@ -190,12 +181,13 @@ def _recurse_tree(parent, depth, source, c_type=0):
         if tabs >= depth:
             if parent is not None:
                 # print("%s: %s" %(parent, node))
-                if c_type==0:
+                if c_type == 0:
                     parent.callees.append(sub_func)
                 else:
                     parent.callers.append(sub_func)
-            last_line = _recurse_tree(sub_func, tabs+1, source, c_type)
+            last_line = _recurse_tree(sub_func, tabs + 1, source, c_type)
     return last_line
+
 
 def recurse_to_dict(func, changed_func_names, depth):
     dd = {
@@ -204,13 +196,14 @@ def recurse_to_dict(func, changed_func_names, depth):
         "file_loc": func.file_loc,
 
         "code": func.code,
-        "callers":[],
-        "callees":[]
+        "callers": [],
+        "callees": []
     }
     if len(func.callees) > 0:
         for ff in func.callees:
             # print("==", depth, ff.func_name, changed_func_names)
-            if depth == 0 and changed_func_names is not None and ff.file_name!= "" and ff.file_name in changed_func_names.keys() and ff.func_name in changed_func_names[ff.file_name]:
+            if depth == 0 and changed_func_names is not None and ff.file_name != "" and ff.file_name in changed_func_names.keys() and ff.func_name in \
+                    changed_func_names[ff.file_name]:
                 ff.code = process_file(ff.file_name, int(ff.file_loc))
                 dd['callees'].append(recurse_to_dict(ff, changed_func_names, depth + 1))
             if depth > 0:
@@ -219,13 +212,15 @@ def recurse_to_dict(func, changed_func_names, depth):
 
     if len(func.callers) > 0:
         for ff in func.callers:
-            if depth == 0 and changed_func_names is not None and ff.file_name!= "" and ff.file_name in changed_func_names.keys() and ff.func_name in changed_func_names[ff.file_name]:
+            if depth == 0 and changed_func_names is not None and ff.file_name != "" and ff.file_name in changed_func_names.keys() and ff.func_name in \
+                    changed_func_names[ff.file_name]:
                 ff.code = process_file(ff.file_name, int(ff.file_loc))
                 dd['callers'].append(recurse_to_dict(ff, changed_func_names, depth + 1))
             if depth > 0:
                 ff.code = process_file(ff.file_name, int(ff.file_loc))
                 dd['callers'].append(recurse_to_dict(ff, changed_func_names, depth + 1))
     return dd
+
 
 """
 # 【2】列举所有 c 文件 --> 列举所有的文件路径
@@ -236,6 +231,8 @@ def recurse_to_dict(func, changed_func_names, depth):
 
 # 【5】然后，最这些 caller 和 callee 提取代码，即为 code_after, caller_after, callee_after
 """
+
+
 def find_caller_callee(commit, functions, data_type="ffmpeg"):
     logger.info("=== find_caller_callee")
     changed_funcs = {}
@@ -244,7 +241,7 @@ def find_caller_callee(commit, functions, data_type="ffmpeg"):
         filename, b = ff.split(":::")
         res = re.findall(p1, b)
         if len(res) > 0:
-            func_name = res[0]+")"
+            func_name = res[0] + ")"
             if filename not in changed_funcs.keys():
                 changed_funcs[filename] = [func_name]
             else:
@@ -252,14 +249,11 @@ def find_caller_callee(commit, functions, data_type="ffmpeg"):
     # print("changed_funcs:")
     # print(changed_funcs)
 
-
-
     cmd = 'find . -name "*.c"'
     p = os.popen(cmd)
     x = p.read()
 
     c_files = x.strip().split("\n")
-
 
     # callees
     cmd = "cflow "
@@ -274,24 +268,22 @@ def find_caller_callee(commit, functions, data_type="ffmpeg"):
     to_callee_file = "%s/%s_callee.txt" % (show_log_savepath, commit)
     cmd = cmd + " --omit-arguments --depth=3 --all --all"
 
-    logger.info("cmd: %s > %s" % (cmd, to_callee_file) )
+    logger.info("cmd: %s > %s" % (cmd, to_callee_file))
     p = os.popen(cmd + " > " + to_callee_file)
     x = p.read()
 
     print("saved to", to_callee_file)
 
-
     func_callee = Function("root_callee")
     with open(to_callee_file) as inFile:
         _recurse_tree(func_callee, 0, inFile, 0)
-
 
     # callers
     to_caller_file = "%s/%s_caller.txt" % (show_log_savepath, commit)
 
     cmd += " --reverse "
-    logger.info("cmd: %s > %s" % (cmd, to_caller_file) )
-    p=os.popen(cmd + " > " + to_caller_file)
+    logger.info("cmd: %s > %s" % (cmd, to_caller_file))
+    p = os.popen(cmd + " > " + to_caller_file)
     x = p.read()
 
     print("saved to", to_caller_file)
@@ -303,16 +295,15 @@ def find_caller_callee(commit, functions, data_type="ffmpeg"):
 
     func_callee_dict = recurse_to_dict(func_callee, changed_funcs, 0)
     func_caller_dict = recurse_to_dict(func_caller, changed_funcs, 0)
-    logger.info("=== len of  func_callee_dict['callees']: %d" % len( func_callee_dict['callees']))
-    logger.info("=== len of  func_callee_dict['callers']: %d" % len( func_callee_dict['callers']))
-    logger.info("=== len of  func_caller_dict['callees']: %d" % len( func_caller_dict['callees']))
-    logger.info("=== len of  func_caller_dict['callers']: %d" % len( func_caller_dict['callers']))
+    logger.info("=== len of  func_callee_dict['callees']: %d" % len(func_callee_dict['callees']))
+    logger.info("=== len of  func_callee_dict['callers']: %d" % len(func_callee_dict['callers']))
+    logger.info("=== len of  func_caller_dict['callees']: %d" % len(func_caller_dict['callees']))
+    logger.info("=== len of  func_caller_dict['callers']: %d" % len(func_caller_dict['callers']))
 
     d1 = func_callee_dict['callees']
     d2 = func_caller_dict['callers']
 
-    return d1+d2
-
+    return d1 + d2
 
     # # find callee
     # code_list = []
@@ -322,7 +313,6 @@ def find_caller_callee(commit, functions, data_type="ffmpeg"):
 
     # flag_start = False
     # flag_start_sp_n = 0
-
 
     # function_list = []
     # function_detail = {}
@@ -403,7 +393,6 @@ def find_caller_callee(commit, functions, data_type="ffmpeg"):
     #             function_detail['callers'] = caller_list
     #             function_list.append(function_detail )
 
-
     #         flag_start = False
     #         function_detail = {}
     #         callee_list = []
@@ -424,13 +413,13 @@ def find_caller_callee(commit, functions, data_type="ffmpeg"):
     #                 'callees': []
     #             }
 
-
     # # code = "\n---code---\n".join(code_list)
     # # callee = "\n----callee----\n".join(callee_list)
     # # caller = "\n----caller----\n".join(caller_list)
     # # return code, callee, caller
 
     # return function_list
+
 
 def get_all_files_func():
     cmd = 'find . -name "*.c"'
@@ -456,7 +445,6 @@ def get_all_files_func():
             x = ""
             logger.error("=== p.read() error")
 
-
         p1 = re.compile(r'.*?[(][)]', re.S)  # func name
         p2 = re.compile(r'at .*?[.]c:.*?>', re.S)  # filename and locations
         for line in x.strip().split("\n"):
@@ -474,6 +462,147 @@ def get_all_files_func():
 
     return total_c_files, total_c_funcs
 
+
+def get_params_from_link(link):
+    # print(link)
+    url, params_str = link.split("?", 1)
+    params = params_str.split("&")
+
+    res = {}
+    for p in params:
+        k, v = p.split("=")
+        res[k] = v
+    return res
+
+
+def get_commits_file(cve_list_file, to_file):
+    if not os.path.exists(cve_list_file):
+        print("cve_list_file not existed: %s" % cve_list_file)
+        logger.error("cve_list_file not existed: %s" % cve_list_file)
+        exit()
+
+    log_file = "commit_log.tmp"
+
+    if not os.path.exists(log_file):
+        cmd = "git --no-pager log --pretty=oneline > %s" % log_file
+        p = os.popen(cmd)
+        x = p.read()
+
+    all_commits = []
+    with open(log_file, "r", encoding="utf8", errors='ignore') as f:
+        for line in f.read().strip().split("\n"):
+            commit, _ = line.split(" ", 1)
+            all_commits.append(commit)
+
+    df_cve_list = pd.read_csv(cve_list_file)
+    df_cve_list = df_cve_list.fillna('')
+    print(df_cve_list.head())
+
+    cve_commits = []
+    # cve_ref_links = df_cve_list['ref_links']
+    commit_cveid = {}
+
+    for index, row in df_cve_list.iterrows():
+        cve_id = row['cve_id']
+
+        links = row['ref_links'].split("\n")
+        # print(links)
+        for link in links:
+            if link.find("git.kernel.org/cgit/linux/kernel") > -1 and link.find("?id") > -1:
+                # params = dict(urllib.parse.parse_qsl(urllib.parse.urlsplit(link.replace(";", "&")).query))
+                params = get_params_from_link(link)
+                commit_id = params['id']
+                cve_commits.append(commit_id)
+                if commit_id in commit_cveid.keys():
+                    print("exists: %s" % commit_id)
+                    print("before: %s" % commit_cveid[commit_id])
+                    print("new:  %s" % cve_id)
+                else:
+                    commit_cveid[commit_id] = [cve_id, row['affected_tags'], row['ref_links']]
+
+            elif link.find("github.com/torvalds/linux/commit") > -1:
+                # print("===github===")
+                # print(link)
+                arr = link.split("/")
+                commit_id = arr[-1]
+                loc = commit_id.find("#")
+                if loc > -1:
+                    commit_id = commit_id[:loc]
+                cve_commits.append(commit_id)
+                if commit_id in commit_cveid.keys():
+                    print("exists: %s" % commit_id)
+                    print("  before: %s" % commit_cveid[commit_id])
+                    print("  new:  %s" % cve_id)
+                else:
+                    commit_cveid[commit_id] = [cve_id, row['affected_tags'], row['ref_links']]
+
+            else:
+                pass
+    print("len(commit_cveid.keys())", len(commit_cveid.keys()))
+    print("len(cve_commits): ", len(cve_commits))
+
+    # commit_tag = {}
+    # with open("ffmpeg_all_tag_commit_id.txt", "r") as f:
+    #     lines = f.read().strip().split("\n")
+    #     for l in lines:
+    #         commit, tag = l.split(" ", 1)
+    #         # print(commit, tag)
+    #         commit_tag[commit] = tag
+    # print("len(commit_tag.keys()):", len(commit_tag.keys()))
+
+    # all_commits = []
+    # with open("FFmpeg_all_branch_commits.txt", "r") as f:
+    #     lines = f.read().strip().split("\n")
+    #     for l in lines:
+    #         commit, _ = l.split(" ", 1)
+    #         all_commits.append(commit)
+    # print("len of all_commits:", len(all_commits))
+
+    to_commits = []
+    to_tags = []
+    to_cve_ids = []
+    to_affected_tags = []
+    to_ref_links = []
+
+    commit_cveid_keys = list(commit_cveid.keys())
+    # print(list(commit_cveid.keys()))
+
+    # commit_tag_keys = list(commit_tag.keys())
+
+    for commit in all_commits:
+        cve_id = ""
+        tag = ""
+        affected_tags = ""
+        ref_links = ""
+
+        if commit in commit_cveid_keys:
+            cve_id, affected_tags, ref_links = commit_cveid[commit]
+            # print("111")
+
+        # if commit in commit_tag_keys:
+        #     tag = commit_tag[commit]
+
+        if cve_id != "" or tag != "":
+            to_commits.append(commit)
+            to_tags.append(tag)
+            to_cve_ids.append(cve_id)
+            to_affected_tags.append(affected_tags)
+            to_ref_links.append(ref_links)
+
+    to_data = {
+        'commit_id': to_commits,
+        'tag': to_tags,
+        'cve_id': to_cve_ids,
+        'affected_tags': to_affected_tags,
+        'ref_links': to_ref_links
+    }
+
+    to_df = pd.DataFrame(data=to_data)
+    to_df.to_csv(to_file, sep=',', index=None)
+    print("saved to: %s" % to_file)
+    logger.info("saved to: %s" % to_file)
+
+
 if __name__ == '__main__':
     commit_id_list = []
     code_before_list = []
@@ -489,16 +618,31 @@ if __name__ == '__main__':
     changed_func_num_list = []
 
     parser = argparse.ArgumentParser(description='Test for argparse')
+    parser.add_argument('--data_type', help='data_type', type=str, default='ffmpeg')
     parser.add_argument('--log_file', help='log_file', type=str, default='../log/ffmpeg.log')
     args = parser.parse_args()
+
+    data_path = "../data2"
+    if not os.path.exists(data_path):
+        os.makedirs(data_path)
+
+    data_type = args.data_type
+
+    ffmpeg_commits_file = data_path + "/%s_commits_in_order.csv" % data_type
+    cve_list_file = data_path + "/%s_vul_list.csv" % data_type
+    # df_file = data_path + "/FFmpeg.csv"
+
+    to_df_file = "%s_caller_callee.csv" % data_type
 
     pp = os.path.dirname(args.log_file)
     if pp != "." and not os.path.exists(pp):
         os.makedirs(pp)
 
+    json_savepath = data_path + "/%s_jsons" % data_type
     if not os.path.exists(json_savepath + "/"):
         os.makedirs(json_savepath + "/")
 
+    show_log_savepath = data_path + "/FFmpeg_tmp"
     if not os.path.exists(show_log_savepath + "/"):
         os.makedirs(show_log_savepath + "/")
 
@@ -509,6 +653,9 @@ if __name__ == '__main__':
     logger = logging.getLogger(__name__)
 
     logger.info("cflow parameters %s", args)
+
+    if not os.path.exists(ffmpeg_commits_file):
+        get_commits_file(cve_list_file, ffmpeg_commits_file)
 
     df = pd.read_csv(ffmpeg_commits_file)
     df = df.fillna('')
@@ -521,18 +668,21 @@ if __name__ == '__main__':
         commit_id = row['commit_id']
         if cve_id != '':
             if cve_id in cve_commits.keys():
-                cve_commits[ cve_id ].append(commit_id)
+                cve_commits[cve_id].append(commit_id)
             else:
-                cve_commits[ cve_id ] = [commit_id]
+                cve_commits[cve_id] = [commit_id]
 
+    ii = -1
     for cve_id in cve_commits.keys():
+        ii += 1
+
         to_json_file = json_savepath + "/%s.json" % cve_id
-        if os.path.exists( to_json_file ):
+        if os.path.exists(to_json_file):
             logger.info("=== %s exists" % to_json_file)
             continue
 
-        print("now:", index, cve_id)
-        logger.info("=== now: %d ,cve_id: %s" % (index, cve_id) )
+        print("now:", ii, cve_id)
+        logger.info("=== now: %d ,cve_id: %s" % (index, cve_id))
 
         commits = cve_commits[cve_id]
         commit_functions = []
@@ -554,7 +704,6 @@ if __name__ == '__main__':
             # 统计所有的 file 数量，和 func 数量
             total_c_files, total_c_funcs = get_all_files_func()
 
-
             # git show diff
             cmd = "git --no-pager show %s" % commit
             # cmd = " git --no-pager diff %s %s^1" % (commit, affected_tag)
@@ -567,13 +716,11 @@ if __name__ == '__main__':
                 x = ""
                 logger.error("=== p.read() error, cmd: %s" % cmd)
 
-
             # to_show_file = "%s/%s_git_diff_.txt" % (show_log_savepath, commit)
             # with open(to_show_file, "w") as f:
             #     f.write(x)
             # print("saved to", to_show_file)
             # logger.info("saved to %s" % to_show_file)
-
 
             # 【1】找出 修改的 filename 和 func name （计算 vul， non-vul distribution）
             changed_files_num = 0
@@ -589,13 +736,11 @@ if __name__ == '__main__':
                     if data_type == "ffmpeg" and (filename.find("/tests/") > -1 or filename.find("/doc/") > -1):
                         not_test = False
 
-
                     if not_test and filename[-2:] == '.c':
                         changed_files_num += 1
                         is_c_file = True
                     else:
                         is_c_file = False
-
 
                 if is_c_file and line.find("@@") > -1:
                     arr = line.strip().split("@@")
@@ -603,9 +748,8 @@ if __name__ == '__main__':
                     # print(arr[-1].strip())
                     if func_name not in changed_func_names:
                         changed_func_names.append(func_name)
-                        print("changed func: %s" % func_name )
+                        print("changed func: %s" % func_name)
                         changed_func_num += 1
-
 
             functions_after = find_caller_callee(cve_id, changed_func_names)
 
