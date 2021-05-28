@@ -491,7 +491,8 @@ def get_commits_file(cve_list_file, to_file):
     all_commits = []
     with open(log_file, "r", encoding="utf8", errors='ignore') as f:
         for line in f.read().strip().split("\n"):
-            commit, _ = line.split(" ", 1)
+            arr = line.split(" ", 1)
+            commit = arr[0]
             all_commits.append(commit)
 
     df_cve_list = pd.read_csv(cve_list_file)
@@ -508,9 +509,10 @@ def get_commits_file(cve_list_file, to_file):
         links = row['ref_links'].split("\n")
         # print(links)
         for link in links:
-            if link.find("git.kernel.org/cgit/linux/kernel") > -1 and link.find("?id") > -1:
+            if link.find("/git.php.net/") > -1 and link.find("h=") > -1:
                 # params = dict(urllib.parse.parse_qsl(urllib.parse.urlsplit(link.replace(";", "&")).query))
-                params = get_params_from_link(link)
+                link_ = link.replace(";", "&")
+                params = get_params_from_link(link_)
                 commit_id = params['id']
                 cve_commits.append(commit_id)
                 if commit_id in commit_cveid.keys():
@@ -520,7 +522,7 @@ def get_commits_file(cve_list_file, to_file):
                 else:
                     commit_cveid[commit_id] = [cve_id, row['affected_tags'], row['ref_links']]
 
-            elif link.find("github.com/torvalds/linux/commit") > -1:
+            elif link.find("github.com/php/php-src/commit") > -1:
                 # print("===github===")
                 # print(link)
                 arr = link.split("/")
@@ -642,7 +644,7 @@ if __name__ == '__main__':
     if not os.path.exists(json_savepath + "/"):
         os.makedirs(json_savepath + "/")
 
-    show_log_savepath = data_path + "/FFmpeg_tmp"
+    show_log_savepath = data_path + "/%s_tmp" % data_type
     if not os.path.exists(show_log_savepath + "/"):
         os.makedirs(show_log_savepath + "/")
 
