@@ -114,7 +114,7 @@ def process_file(filename, line_num):
     found_end = False
 
     # encoding = "ISO-8859-1" for xye server
-    with open(filename, "r") as f:
+    with open(filename, "r", encoding="utf8", errors='ignore') as f:
         for i, line in enumerate(f):
             if (i >= (line_num - 1)):
                 code += line
@@ -484,7 +484,7 @@ def get_commits_file(cve_list_file, to_file):
     log_file = "commit_log.tmp"
 
     if not os.path.exists(log_file):
-        cmd = "git --no-pager log --pretty=oneline > %s" % log_file
+        cmd = "git --no-pager log --pretty=oneline --all > %s" % log_file
         p = os.popen(cmd)
         x = p.read()
 
@@ -522,7 +522,7 @@ def get_commits_file(cve_list_file, to_file):
                 else:
                     commit_cveid[commit_id] = [cve_id, row['affected_tags'], row['ref_links']]
 
-            elif link.find("github.com/php/php-src/commit") > -1:
+            elif link.find("github.com/the-tcpdump-group/tcpdump/commit") > -1:
                 # print("===github===")
                 # print(link)
                 arr = link.split("/")
@@ -735,7 +735,7 @@ if __name__ == '__main__':
                 if loc > -1:
                     filename = line[6:].strip()
                     not_test = True
-                    if data_type == "ffmpeg" and (filename.find("/tests/") > -1 or filename.find("/doc/") > -1):
+                    if (filename.find("/tests/") > -1 or filename.find("/doc/") > -1):
                         not_test = False
 
                     if not_test and filename[-2:] == '.c':
