@@ -400,11 +400,9 @@ def get_commits_file(cve_list_file, to_file):
         links = row['ref_links'].split("\n")
         # print(links)
         for link in links:
-            if link.find("/git.php.net/") > -1 and link.find("h=") > -1:
-                # params = dict(urllib.parse.parse_qsl(urllib.parse.urlsplit(link.replace(";", "&")).query))
-                link_ = link.replace(";", "&")
-                params = get_params_from_link(link_)
-                commit_id = params['id']
+            cc = re.findall("[a-zA-Z0-9]{40}", link)
+            if len(cc) > 0:
+                commit_id = cc[0]
                 cve_commits.append(commit_id)
                 if commit_id in commit_cveid.keys():
                     print("exists: %s" % commit_id)
@@ -413,24 +411,37 @@ def get_commits_file(cve_list_file, to_file):
                 else:
                     commit_cveid[commit_id] = [cve_id, row['affected_tags'], row['ref_links']]
 
-            elif link.find("github.com/") > -1 and link.find("/commit/") > -1:
-                # print("===github===")
-                # print(link)
-                arr = link.split("/")
-                commit_id = arr[-1]
-                loc = commit_id.find("#")
-                if loc > -1:
-                    commit_id = commit_id[:loc]
-                cve_commits.append(commit_id)
-                if commit_id in commit_cveid.keys():
-                    print("exists: %s" % commit_id)
-                    print("  before: %s" % commit_cveid[commit_id])
-                    print("  new:  %s" % cve_id)
-                else:
-                    commit_cveid[commit_id] = [cve_id, row['affected_tags'], row['ref_links']]
-
-            else:
-                pass
+            # if link.find("/git.php.net/") > -1 and link.find("h=") > -1:
+            #     # params = dict(urllib.parse.parse_qsl(urllib.parse.urlsplit(link.replace(";", "&")).query))
+            #     link_ = link.replace(";", "&")
+            #     params = get_params_from_link(link_)
+            #     commit_id = params['id']
+            #     cve_commits.append(commit_id)
+            #     if commit_id in commit_cveid.keys():
+            #         print("exists: %s" % commit_id)
+            #         print("before: %s" % commit_cveid[commit_id])
+            #         print("new:  %s" % cve_id)
+            #     else:
+            #         commit_cveid[commit_id] = [cve_id, row['affected_tags'], row['ref_links']]
+            #
+            # elif link.find("github.com/") > -1 and link.find("/commit/") > -1:
+            #     # print("===github===")
+            #     # print(link)
+            #     arr = link.split("/")
+            #     commit_id = arr[-1]
+            #     loc = commit_id.find("#")
+            #     if loc > -1:
+            #         commit_id = commit_id[:loc]
+            #     cve_commits.append(commit_id)
+            #     if commit_id in commit_cveid.keys():
+            #         print("exists: %s" % commit_id)
+            #         print("  before: %s" % commit_cveid[commit_id])
+            #         print("  new:  %s" % cve_id)
+            #     else:
+            #         commit_cveid[commit_id] = [cve_id, row['affected_tags'], row['ref_links']]
+            #
+            # else:
+            #     pass
     print("len(commit_cveid.keys())", len(commit_cveid.keys()))
     print("len(cve_commits): ", len(cve_commits))
 
