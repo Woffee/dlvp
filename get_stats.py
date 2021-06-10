@@ -1,5 +1,7 @@
 """
-
+May 22, 2021:
+    - 这个文件放到 data2 文件夹下
+    - 每个 callee 都是一个 function object，需要递归计算个数。
 
 May 16, 2021:
     - 遍历所有的 json 文件，统计每个 cve_id 的记录
