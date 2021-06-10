@@ -6,4 +6,5 @@ mydata/
 read_tree/
 *.json
 *.zip
+*.csv
 
