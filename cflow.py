@@ -90,6 +90,27 @@ import json
 import urllib
 
 
+# make dirs
+folders = ['data/', 'logs/', 'projects/']
+for f in folders:
+    if not os.path.exists(f):
+        os.makedirs(f)
+
+# log file
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+now_time = time.strftime("%Y-%m-%d_%H-%M", time.localtime())
+logging.basicConfig(level=logging.INFO,
+                    format='%(asctime)s %(levelname)s %(filename)s line: %(lineno)s - %(message)s',
+                    datefmt='%Y-%m-%d %H:%M:%S',
+                    filename=BASE_DIR + '/logs/' + now_time + '.log')
+logger = logging.getLogger(__name__)
+
+
+# global variables
+save_path = BASE_DIR + '/data'
+project_path = ""
+
+
 class Function:
     def __init__(self, func_name, file_name="", file_loc=0, code=""):
         self.func_name = func_name
@@ -249,14 +270,14 @@ def find_caller_callee(commit, functions, data_type="ffmpeg"):
     # print("changed_funcs:")
     # print(changed_funcs)
 
-    cmd = 'find . -name "*.c"'
+    cmd = "cd %s && " % project_path + 'find . -name "*.c"'
     p = os.popen(cmd)
     x = p.read()
 
     c_files = x.strip().split("\n")
 
     # callees
-    cmd = "cflow "
+    cmd = "cd %s && " % project_path + "cflow "
     paths = []
     for filename in c_files:
         pp = os.path.dirname(filename)
@@ -268,8 +289,8 @@ def find_caller_callee(commit, functions, data_type="ffmpeg"):
     to_callee_file = "%s/%s_callee.txt" % (show_log_savepath, commit)
     cmd = cmd + " --omit-arguments --depth=3 --all --all"
 
-    logger.info("cmd: %s > %s" % (cmd, to_callee_file))
-    p = os.popen(cmd + " > " + to_callee_file)
+    logger.info("cmd: %s --output=%s" % (cmd, to_callee_file))
+    p = os.popen(cmd + " --output=" + to_callee_file)
     x = p.read()
 
     print("saved to", to_callee_file)
@@ -282,8 +303,8 @@ def find_caller_callee(commit, functions, data_type="ffmpeg"):
     to_caller_file = "%s/%s_caller.txt" % (show_log_savepath, commit)
 
     cmd += " --reverse "
-    logger.info("cmd: %s > %s" % (cmd, to_caller_file))
-    p = os.popen(cmd + " > " + to_caller_file)
+    logger.info("cmd: %s --output=%s" % (cmd, to_caller_file))
+    p = os.popen(cmd + " --output=" + to_caller_file)
     x = p.read()
 
     print("saved to", to_caller_file)
@@ -422,7 +443,7 @@ def find_caller_callee(commit, functions, data_type="ffmpeg"):
 
 
 def get_all_files_func():
-    cmd = 'find . -name "*.c"'
+    cmd = "cd %s && " % project_path + 'find . -name "*.c"'
     p = os.popen(cmd)
     try:
         x = p.read()
@@ -436,7 +457,7 @@ def get_all_files_func():
     for filename in c_files:
         funcs = []
 
-        cmd = "cflow --omit-arguments %s" % filename
+        cmd = "cd %s && " % project_path + "cflow --omit-arguments %s" % filename
         # logger.info("cmd: %s" % cmd)
         p = os.popen(cmd)
         try:
@@ -483,13 +504,13 @@ def get_commits_file(cve_list_file, to_file):
 
     log_file = "commit_log.tmp"
 
-    if not os.path.exists(log_file):
-        cmd = "git --no-pager log --pretty=oneline --all > %s" % log_file
+    if not os.path.exists(project_path + "/" + log_file):
+        cmd = "cd %s && " % project_path + "git --no-pager log --pretty=oneline --all > %s" % log_file
         p = os.popen(cmd)
         x = p.read()
 
     all_commits = []
-    with open(log_file, "r", encoding="utf8", errors='ignore') as f:
+    with open(project_path + "/" + log_file, "r", encoding="utf8", errors='ignore') as f:
         for line in f.read().strip().split("\n"):
             arr = line.split(" ", 1)
             commit = arr[0]
@@ -519,38 +540,7 @@ def get_commits_file(cve_list_file, to_file):
                     print("new:  %s" % cve_id)
                 else:
                     commit_cveid[commit_id] = [cve_id, row['affected_tags'], row['ref_links']]
-            #
-            # if link.find("/git.php.net/") > -1 and link.find("h=") > -1:
-            #     # params = dict(urllib.parse.parse_qsl(urllib.parse.urlsplit(link.replace(";", "&")).query))
-            #     link_ = link.replace(";", "&")
-            #     params = get_params_from_link(link_)
-            #     commit_id = params['id']
-            #     cve_commits.append(commit_id)
-            #     if commit_id in commit_cveid.keys():
-            #         print("exists: %s" % commit_id)
-            #         print("before: %s" % commit_cveid[commit_id])
-            #         print("new:  %s" % cve_id)
-            #     else:
-            #         commit_cveid[commit_id] = [cve_id, row['affected_tags'], row['ref_links']]
-            #
-            # elif link.find("github.com/") > -1 and link.find("/commit/") > -1:
-            #     # print("===github===")
-            #     # print(link)
-            #     arr = link.split("/")
-            #     commit_id = arr[-1]
-            #     loc = commit_id.find("#")
-            #     if loc > -1:
-            #         commit_id = commit_id[:loc]
-            #     cve_commits.append(commit_id)
-            #     if commit_id in commit_cveid.keys():
-            #         print("exists: %s" % commit_id)
-            #         print("  before: %s" % commit_cveid[commit_id])
-            #         print("  new:  %s" % cve_id)
-            #     else:
-            #         commit_cveid[commit_id] = [cve_id, row['affected_tags'], row['ref_links']]
-            #
-            # else:
-            #     pass
+
     print("len(commit_cveid.keys())", len(commit_cveid.keys()))
     print("len(cve_commits): ", len(cve_commits))
 
@@ -615,6 +605,13 @@ def get_commits_file(cve_list_file, to_file):
     print("saved to: %s" % to_file)
     logger.info("saved to: %s" % to_file)
 
+# 从 github 链接中提取仓库名
+def get_github_name(github_link):
+    p = github_link.find(".git")
+    if p>-1:
+        github_link = github_link[:p]
+    arr = github_link.split("/")
+    return arr[-1]
 
 if __name__ == '__main__':
     commit_id_list = []
@@ -632,40 +629,40 @@ if __name__ == '__main__':
 
     parser = argparse.ArgumentParser(description='Test for argparse')
     parser.add_argument('--data_type', help='data_type', type=str, default='ffmpeg')
-    parser.add_argument('--log_file', help='log_file', type=str, default='../log/ffmpeg.log')
+    parser.add_argument('--vul_list_file', help='vul_list_file', type=str, default='data/vul_list/ffmpeg_vul_list.json')
+    parser.add_argument('--github', help='github link', type=str, default='https://github.com/FFmpeg/FFmpeg.git')
+
     args = parser.parse_args()
 
-    data_path = "../data2"
-    if not os.path.exists(data_path):
-        os.makedirs(data_path)
-
+    data_path = save_path
     data_type = args.data_type
+    cve_list_file = args.vul_list_file
 
     ffmpeg_commits_file = data_path + "/%s_commits_in_order.csv" % data_type
-    cve_list_file = data_path + "/%s_vul_list.csv" % data_type
-    # df_file = data_path + "/FFmpeg.csv"
 
-    to_df_file = "%s_caller_callee.csv" % data_type
-
-    pp = os.path.dirname(args.log_file)
-    if pp != "." and not os.path.exists(pp):
-        os.makedirs(pp)
-
-    json_savepath = data_path + "/%s_jsons" % data_type
+    json_savepath = data_path + "/jsons/%s" % data_type
     if not os.path.exists(json_savepath + "/"):
         os.makedirs(json_savepath + "/")
 
-    show_log_savepath = data_path + "/%s_tmp" % data_type
+    show_log_savepath = data_path + "/tmp/%s" % data_type
     if not os.path.exists(show_log_savepath + "/"):
         os.makedirs(show_log_savepath + "/")
 
-    logging.basicConfig(level=logging.INFO,
-                        format='%(asctime)s %(levelname)s %(filename)s line: %(lineno)s - %(message)s',
-                        datefmt='%Y-%m-%d %H:%M:%S',
-                        filename=args.log_file)
-    logger = logging.getLogger(__name__)
 
     logger.info("cflow parameters %s", args)
+
+    # git clone
+    github_name = get_github_name(args.github)
+    project_path = "%s/projects/%s_" % (BASE_DIR, data_type)
+    if not os.path.exists(project_path + "/"):
+        os.makedirs(project_path + "/")
+    project_path = project_path + "/" + github_name
+    if not os.path.exists(project_path + "/"):
+        cmd = "cd %s && git clone %s" % (project_path, args.github)
+        p = os.popen(cmd)
+        x = p.read()
+    print("project_path: %s" % project_path)
+
 
     if not os.path.exists(ffmpeg_commits_file):
         get_commits_file(cve_list_file, ffmpeg_commits_file)
@@ -705,7 +702,7 @@ if __name__ == '__main__':
             # 1. git reset
 
             # git reset
-            cmd = "git reset --hard %s" % commit
+            cmd = "cd %s && git reset --hard %s" % (project_path, commit)
             logger.info("cmd: %s" % cmd)
             p = os.popen(cmd)
             try:
@@ -718,7 +715,7 @@ if __name__ == '__main__':
             total_c_files, total_c_funcs = get_all_files_func()
 
             # git show diff
-            cmd = "git --no-pager show %s" % commit
+            cmd = "cd %s && git --no-pager show %s" % (project_path, commit)
             # cmd = " git --no-pager diff %s %s^1" % (commit, affected_tag)
 
             logger.info("cmd: %s" % cmd)
@@ -746,7 +743,7 @@ if __name__ == '__main__':
                 if loc > -1:
                     filename = line[6:].strip()
                     not_test = True
-                    if (filename.find("/tests/") > -1 or filename.find("/doc/") > -1):
+                    if (filename.find("/tests/") > -1 or filename.find("/test/") > -1 or filename.find("/doc/") > -1):
                         not_test = False
 
                     if not_test and filename[-2:] == '.c':
@@ -767,7 +764,7 @@ if __name__ == '__main__':
             functions_after = find_caller_callee(cve_id, changed_func_names)
 
             # git reset 到修复前
-            cmd = "git reset --hard %s^1" % commit
+            cmd = "cd %s && git reset --hard %s^1" % (project_path, commit)
             logger.info("cmd: %s" % cmd)
             p = os.popen(cmd)
             try:
