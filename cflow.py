@@ -650,17 +650,20 @@ if __name__ == '__main__':
 
 
     logger.info("cflow parameters %s", args)
+    print("started")
 
     # git clone
     github_name = get_github_name(args.github)
     project_path = "%s/projects/%s_" % (BASE_DIR, data_type)
     if not os.path.exists(project_path + "/"):
         os.makedirs(project_path + "/")
-    project_path = project_path + "/" + github_name
-    if not os.path.exists(project_path + "/"):
+
+    if not os.path.exists(project_path + "/" + github_name):
         cmd = "cd %s && git clone %s" % (project_path, args.github)
         p = os.popen(cmd)
         x = p.read()
+
+    project_path = project_path + "/" + github_name
     print("project_path: %s" % project_path)
 
 
