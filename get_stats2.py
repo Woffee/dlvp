@@ -11,7 +11,11 @@ import pandas as pd
 base = "./data/jsons"
 to_file = "wenbo_data.csv"
 
+project_list = []
 cve_id_list = []
+
+func_name_list = []
+file_name_list = []
 
 callers_total_before_list = []
 callees_total_before_list = []
@@ -45,6 +49,12 @@ for root, ds, fs in os.walk(base):
     for f in fs:
         fullname = os.path.join(root, f)
         print(fullname)
+
+        name_arr = fullname.split("/")
+        project_name = name_arr[3]
+        pos = project_name.find("_jsons")
+        if pos > -1:
+            project_name = project_name[:pos]
 
         with open(fullname, "r") as fr:
             txt = fr.read()
@@ -98,24 +108,23 @@ for root, ds, fs in os.walk(base):
 
 
 
-        if len(func_stats) == 0:
-            cve_id_list.append(cve['cve_id'])
-            callers_total_before_list.append(0)
-            callers_total_after_list.append(0)
-            callees_total_before_list.append(0)
-            callees_total_after_list.append(0)
-        else:
-            for fff in func_stats.keys():
-                v = func_stats[fff]
+        for fff in func_stats.keys():
+            v = func_stats[fff]
 
-                cve_id_list.append(cve['cve_id'])
-                callers_total_before_list.append(v['caller_num1'])
-                callers_total_after_list.append(v['caller_num2'])
-                callees_total_before_list.append(v['callee_num1'])
-                callees_total_after_list.append(v['callee_num2'])
+            project_list.append(project_name)
+            cve_id_list.append(cve['cve_id'])
+            func_name_list.append(fff)
+            file_name_list.append(v['file_name'])
+            callers_total_before_list.append(v['caller_num1'])
+            callers_total_after_list.append(v['caller_num2'])
+            callees_total_before_list.append(v['callee_num1'])
+            callees_total_after_list.append(v['callee_num2'])
 
 to_data = {
+    'project': project_list,
     'cve_id': cve_id_list,
+    'func_name': func_name_list,
+    'file_name': file_name_list,
     'callers_total_before': callers_total_before_list,
     'callers_total_after': callers_total_after_list,
     'callees_total_before': callees_total_before_list,
