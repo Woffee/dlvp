@@ -23,6 +23,15 @@ callees_total_before_list = []
 callers_total_after_list = []
 callees_total_after_list = []
 
+def get_project_table(filepath):
+    res = {}
+    for f1 in os.listdir(filepath):
+        for f2 in os.listdir(filepath + "/" + f1):
+            ff = f1[:-1]
+            res[ff] = f2
+    return res
+
+projects_table = get_project_table("projects")
 
 def get_callee_num(func):
     res = 0
@@ -55,6 +64,9 @@ for root, ds, fs in os.walk(base):
         pos = project_name.find("_jsons")
         if pos > -1:
             project_name = project_name[:pos]
+
+        if project_name in projects_table.keys():
+            project_name = projects_table[project_name]
 
         with open(fullname, "r") as fr:
             txt = fr.read()
