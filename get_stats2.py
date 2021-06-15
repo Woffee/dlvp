@@ -16,6 +16,7 @@ cve_id_list = []
 
 func_name_list = []
 file_name_list = []
+commit_list = []
 
 callers_total_before_list = []
 callees_total_before_list = []
@@ -82,6 +83,7 @@ for root, ds, fs in os.walk(base):
         func_stats = {}
 
         for func in cve['functions']:
+            commit = func['commit_id']
             for ff in func['functions_before']:
                 func_name = ff['func_name']
                 file_name = ff['file_name']
@@ -91,6 +93,7 @@ for root, ds, fs in os.walk(base):
                 if func_name not in func_stats.keys():
                     func_stats[ func_name ] = {
                         'file_name': file_name,
+                        'commit_id': commit,
                         'callee_num1': callee_num1,
                         'caller_num1': caller_num1,
                         'callee_num2': 0,
@@ -109,6 +112,7 @@ for root, ds, fs in os.walk(base):
                 if func_name not in func_stats.keys():
                     func_stats[ func_name ] = {
                         'file_name': file_name,
+                        'commit_id': commit,
                         'callee_num1': 0,
                         'caller_num1': 0,
                         'callee_num2': callee_num2,
@@ -127,6 +131,7 @@ for root, ds, fs in os.walk(base):
             cve_id_list.append(cve['cve_id'])
             func_name_list.append(fff)
             file_name_list.append(v['file_name'])
+            commit_list.append(v['commit_id'])
             callers_total_before_list.append(v['caller_num1'])
             callers_total_after_list.append(v['caller_num2'])
             callees_total_before_list.append(v['callee_num1'])
@@ -137,6 +142,7 @@ to_data = {
     'cve_id': cve_id_list,
     'func_name': func_name_list,
     'file_name': file_name_list,
+    'commit_id': commit_list,
     'callers_total_before': callers_total_before_list,
     'callers_total_after': callers_total_after_list,
     'callees_total_before': callees_total_before_list,
