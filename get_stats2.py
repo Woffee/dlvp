@@ -9,7 +9,7 @@ import json
 import pandas as pd
 
 base = "./data/jsons"
-to_file = "wenbo_caller_callee_num.csv"
+to_file = "wenbo_data.csv"
 
 cve_id_list = []
 
@@ -62,11 +62,13 @@ for root, ds, fs in os.walk(base):
         for func in cve['functions']:
             for ff in func['functions_before']:
                 func_name = ff['func_name']
+                file_name = ff['file_name']
                 callee_num1 = get_callee_num(ff)
                 caller_num1 = get_caller_num(ff)
 
                 if func_name not in func_stats.keys():
                     func_stats[ func_name ] = {
+                        'file_name': file_name,
                         'callee_num1': callee_num1,
                         'caller_num1': caller_num1,
                         'callee_num2': 0,
@@ -78,11 +80,13 @@ for root, ds, fs in os.walk(base):
 
             for ff in func['functions_after']:
                 func_name = ff['func_name']
+                file_name = ff['file_name']
                 callee_num2 = get_callee_num(ff)
                 caller_num2 = get_caller_num(ff)
 
                 if func_name not in func_stats.keys():
                     func_stats[ func_name ] = {
+                        'file_name': file_name,
                         'callee_num1': 0,
                         'caller_num1': 0,
                         'callee_num2': callee_num2,
@@ -93,18 +97,22 @@ for root, ds, fs in os.walk(base):
                     func_stats[func_name]['caller_num2'] += caller_num2
 
 
-        for fff in func_stats.keys():
-            v = func_stats[fff]
 
-            cve_id_list.append( cve['cve_id'] )
-            callers_total_before_list.append( v['caller_num1'] )
-            callers_total_after_list.append( v['caller_num2'] )
-            callees_total_before_list.append( v['callee_num1'] )
-            callees_total_after_list.append( v['callee_num2'] )
+        if len(func_stats) == 0:
+            cve_id_list.append(cve['cve_id'])
+            callers_total_before_list.append(0)
+            callers_total_after_list.append(0)
+            callees_total_before_list.append(0)
+            callees_total_after_list.append(0)
+        else:
+            for fff in func_stats.keys():
+                v = func_stats[fff]
 
-
-
-
+                cve_id_list.append(cve['cve_id'])
+                callers_total_before_list.append(v['caller_num1'])
+                callers_total_after_list.append(v['caller_num2'])
+                callees_total_before_list.append(v['callee_num1'])
+                callees_total_after_list.append(v['callee_num2'])
 
 to_data = {
     'cve_id': cve_id_list,
