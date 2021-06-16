@@ -125,7 +125,7 @@ def read_wenbo_data(filename):
     return projects
 
 
-def compare(jh_data, wb_data, to_file):
+def compare(jh_data, wb_data, to_file, jiahao_succ_cve_id_list):
     project_list = []
     cve_count_all_list = []
     cve_count_cc_list = []
@@ -133,6 +133,7 @@ def compare(jh_data, wb_data, to_file):
     total_changed_functions_cc_list = []
     total_callers_list = []
     total_callees_list = []
+    total_commits_list = []
 
     is_new_project_list = []
     new_functions_list = []
@@ -153,6 +154,7 @@ def compare(jh_data, wb_data, to_file):
 
         total_callers = 0
         total_callees = 0
+        total_commits = 0
 
 
         new_funcs_count = 0    # new functions
@@ -174,12 +176,13 @@ def compare(jh_data, wb_data, to_file):
             if is_new_proj:
                 is_new_cve = 1
             else:
-                if cve not in jh_data[p].keys():
+                if cve not in jiahao_succ_cve_id_list:
                     is_new_cve = 1
-            if not is_new_cve:
+
+            jh_func_names = []
+            jh_commits = []
+            if not is_new_cve and p in jh_data.keys() and cve in jh_data[p].keys():
                 jh_funcs = jh_data[p][cve]
-                jh_func_names = []
-                jh_commits = []
                 for ff in jh_funcs:
                     if ff['func_name'] not in jh_func_names:
                         jh_func_names.append(ff['func_name'])
@@ -192,6 +195,7 @@ def compare(jh_data, wb_data, to_file):
             total_changed_functions_all += len(functions)
 
             cve_has_cc = False
+            commits_visted = []
             for func in functions:
                 # 判读是否是 新 function
                 is_new_func = 0
@@ -209,9 +213,16 @@ def compare(jh_data, wb_data, to_file):
                         new_funcs_cc_count += 1
 
                 # 判断是否是新 commit
-                if not is_new_cve and func['commit_id'] not in jh_commits:
+                if not is_new_cve and func['commit_id'] not in commits_visted and func['commit_id'] not in jh_commits:
                     new_commits_count += 1
-                    jh_commits.append(func['commit_id'])
+                    commits_visted.append(func['commit_id'])
+
+                if is_new_cve and func['commit_id'] not in commits_visted:
+                    new_commits_count += 1
+                    commits_visted.append(func['commit_id'])
+
+                if func['commit_id'] not in commits_visted:
+                    commits_visted.append( func['commit_id'] )
 
                 if is_new_func:
                     new_funcs_count += 1
@@ -223,7 +234,7 @@ def compare(jh_data, wb_data, to_file):
                 new_cves_count += 1
             if cve_has_cc and is_new_cve:
                 new_cves_cc_count += 1
-
+            total_commits += len(commits_visted)
 
         project_list.append(p)
         cve_count_all_list.append(cve_count_all)
@@ -234,6 +245,7 @@ def compare(jh_data, wb_data, to_file):
 
         total_callers_list.append(total_callers)
         total_callees_list.append(total_callees)
+        total_commits_list.append(total_commits)
 
         is_new_project_list.append(is_new_proj)
         new_functions_list.append(new_funcs_count)
@@ -252,6 +264,7 @@ def compare(jh_data, wb_data, to_file):
         'total_functions(has callers or callees)': total_changed_functions_cc_list,
         'total_callers': total_callers_list,
         'total_callees': total_callees_list,
+        'total_commits': total_commits_list,
 
         'is_new_project': is_new_project_list,
         'new_functions': new_functions_list,
@@ -271,11 +284,19 @@ if __name__ == '__main__':
     wenbo_file = "wenbo_data.csv"
     to_wenbo_file = "wenbo_data_project_level.csv"
 
+    # df = pd.read_csv(wenbo_file)
+    # print(len(df['cve_id'].unique()))
+    # exit()
+
+    all_jiahao_cves = []
+    df1 = pd.read_csv(jiahao_file)
+    df1_succ = df1[(df1['callee_num'] > 0) | (df1['caller_num'] > 0)]
+    jiahao_succ_cve_id_list = list(df1_succ['CVE ID'].unique())
 
     jiahao_data = read_jiahao_data(jiahao_file)
     if not os.path.exists(to_jiahao_file):
         to_jiahao_data(jiahao_data, to_jiahao_file)
 
     wenbo_data = read_wenbo_data(wenbo_file)
-    compare(jiahao_data, wenbo_data, to_wenbo_file)
+    compare(jiahao_data, wenbo_data, to_wenbo_file, jiahao_succ_cve_id_list)
     pass
