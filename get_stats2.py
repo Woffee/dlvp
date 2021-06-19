@@ -1,6 +1,8 @@
 """
 和 jiahao 的数据做对比，看增加了多少。
 
+以 function 为单位。一行一个。
+
 """
 
 
@@ -123,19 +125,29 @@ for root, ds, fs in os.walk(base):
                     func_stats[func_name]['caller_num2'] += caller_num2
 
 
-
-        for fff in func_stats.keys():
-            v = func_stats[fff]
-
+        if len(func_stats.keys()) == 0:
             project_list.append(project_name)
             cve_id_list.append(cve['cve_id'])
-            func_name_list.append(fff)
-            file_name_list.append(v['file_name'])
-            commit_list.append(v['commit_id'])
-            callers_total_before_list.append(v['caller_num1'])
-            callers_total_after_list.append(v['caller_num2'])
-            callees_total_before_list.append(v['callee_num1'])
-            callees_total_after_list.append(v['callee_num2'])
+            func_name_list.append('')
+            file_name_list.append('')
+            commit_list.append('')
+            callers_total_before_list.append(0)
+            callers_total_after_list.append(0)
+            callees_total_before_list.append(0)
+            callees_total_after_list.append(0)
+        else:
+            for fff in func_stats.keys():
+                v = func_stats[fff]
+
+                project_list.append(project_name)
+                cve_id_list.append(cve['cve_id'])
+                func_name_list.append(fff)
+                file_name_list.append(v['file_name'])
+                commit_list.append(v['commit_id'])
+                callers_total_before_list.append(v['caller_num1'])
+                callers_total_after_list.append(v['caller_num2'])
+                callees_total_before_list.append(v['callee_num1'])
+                callees_total_after_list.append(v['callee_num2'])
 
 to_data = {
     'project': project_list,
