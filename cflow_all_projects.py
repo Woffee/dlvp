@@ -25,7 +25,9 @@ if __name__ == '__main__':
                 if line.strip() != "":
                     finished.append(line)
 
-    projects_stats_file = "data/projects_statistics.csv"
+    # data/projects_statistics.csv  官网自己提供 github 链接的 projects
+    # data/projects_statistics2.csv 需要手工找 github 链接的 projects
+    projects_stats_file = "data/projects_statistics2.csv"
     df = pd.read_csv(projects_stats_file)
     df = df.fillna("")
 
