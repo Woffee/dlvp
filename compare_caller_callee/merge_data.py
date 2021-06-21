@@ -74,7 +74,29 @@ def read_cves_info(cves_info_file):
             cves_data[ item['cve_id'] ] = item
     return cves_data
 
+def read_file_changes_data(filepath):
+    data = {}
+    with open(filepath) as f:
+        for line in f.readlines():
+            l = line.strip()
+            if l=="":
+                continue
+            item = json.loads(l)
+            data[ item['commit_id'] ] = {
+                'files_changed':item['files_changed'],
+                'commit_message':item['commit_message'],
+            }
+    return data
+
+def read_proj_lang_data(filepath):
+    data = {}
+    with open(filepath) as f:
+        data = json.loads(f.read().strip())
+    return data
+
 if __name__ == '__main__':
+    proj_lang_data = read_proj_lang_data("project_language.txt")
+
     jh_data, jh_cve_data, proj_lang = read_jh_data(jh_data_file)
     cves_data = read_cves_info(cves_info_file)
 
@@ -82,6 +104,8 @@ if __name__ == '__main__':
     df['cc_sum'] = df['callers_total_before'] + df['callers_total_after'] + df['callees_total_before'] + df[
         'callees_total_after']
     df_wenbo_data = df[ df['cc_sum'] > 0]
+
+    file_changed_data = read_file_changes_data("commit_file_changes.json")
 
     for index, row in df_wenbo_data.iterrows():
         cve_id = row['cve_id']
@@ -98,6 +122,15 @@ if __name__ == '__main__':
         lang = ""
         if project in proj_lang.keys():
             lang = proj_lang[project]
+        elif project in proj_lang_data.keys():
+            lang = proj_lang_data[project]
+
+        files_changed = ""
+        commit_message = ""
+        if commit_id in file_changed_data.keys():
+            files_changed = file_changed_data[commit_id]['files_changed']
+            commit_message = file_changed_data[commit_id]['commit_message']
+
 
         if cve_id in jh_cve_data.keys():
             info = jh_cve_data[ cve_id ]
@@ -111,6 +144,10 @@ if __name__ == '__main__':
 
         elif cve_id in cves_data.keys():
             info = cves_data[cve_id]
+            if info['CWE ID'] == 'CWE id is not defined for this vulnerability':
+                info['CWE ID'] = ''
+            elif info['CWE ID'].find("CWE") < 0:
+                info['CWE ID'] = 'CWE-' + info['CWE ID']
             for ii, c_id in enumerate(info['commit_ids']) :
                 if c_id == commit_id:
                     item = {
@@ -132,8 +169,8 @@ if __name__ == '__main__':
                         'ref_link':info['ref_links'][ii],
                         'commit_id':info['commit_ids'][ii],
 
-                        'commit_message': row['commit_message'],
-                        'files_changed': "",
+                        'commit_message': commit_message if commit_message!="" else row['commit_message'],
+                        'files_changed': files_changed,
                         'lang': lang,
                         'project': row['project'],
                         'version_after_fix': row['commit_id'],
