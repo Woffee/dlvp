@@ -181,7 +181,7 @@ if __name__ == '__main__':
         tmp_directory = tempfile.TemporaryDirectory()
         input_file = args.all_func_trees_file
         graph2vec_input_dir = preprocess_code.preprocess_all_joern_for_graph2vec(input_file, tmp_directory.name,
-                                                                                 "CFG","REF", num_partitions=10)
+                                                                                 "CFG","REF", num_partitions=10, PDT=True)
         output_file = args.all_func_embedding_file
         preprocess_code.run_graph2vec(graph2vec_input_dir, output_file, num_graph2vec_workers=2, num_epoch=10)
 
