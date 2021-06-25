@@ -172,6 +172,7 @@ if __name__ == '__main__':
 
         # get trees from code using Joern
         existed = get_existed_trees_func_id(all_func_trees_json_file)
+        cc = 0
         for i,item in enumerate(data):
             if item['func_id'] in existed:
                 continue
@@ -180,6 +181,12 @@ if __name__ == '__main__':
             with open(all_func_trees_json_file, "a") as fw:
                 fw.write(json.dumps(data[i]) + "\n")
                 logger.info("saved to: %s" % all_func_trees_json_file )
+
+            if cc % 1000 == 0:
+                cmd = "rm /tmp/joern-default*"
+                p = os.popen(cmd)
+                x = p.read()
+            cc += 1
         # save trees in a csv file
         df_functions = pd.DataFrame(data)
         df_functions.to_csv(all_func_trees_file, sep=',', index=None)
