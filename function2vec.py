@@ -53,6 +53,8 @@ def find_functions(functions, cve_id, commit_id, vul, lv=0):
     res = []
 
     for func in functions:
+        if func['code'] == "":
+            continue
         item = {
             'func_id': func_id,
             'cve_id': cve_id,
@@ -66,6 +68,7 @@ def find_functions(functions, cve_id, commit_id, vul, lv=0):
             'callers': [],
         }
         func_id += 1
+        res.append(item)
         if len(func['callees']) > 0:
             sub_funcs = find_functions(func['callees'], cve_id, commit_id, vul, lv+1)
             for sub_f in sub_funcs:
@@ -77,7 +80,6 @@ def find_functions(functions, cve_id, commit_id, vul, lv=0):
             for sub_f in sub_funcs:
                 res.append(sub_f)
                 item['callers'].append(sub_f['func_id'])
-        res.append(item)
     return res
 
 def read_cve_jsons(folder_path):
