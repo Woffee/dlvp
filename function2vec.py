@@ -62,6 +62,7 @@ def find_functions(functions, cve_id, commit_id, vul, lv=0):
             'func_name': func['func_name'],
             'file_name': func['file_name'],
             'file_loc': func['file_loc'],
+            'vul': 1 if vul==1 and lv==0 else 0,
             'code': func['code'],
             'is_center': 1 if lv==0 else 0,
             'callees': [],
@@ -128,11 +129,27 @@ def generate_prolog(code):
     tmp_dir.cleanup()
     return tree
 
+
+# 遍历所有已经生成 trees 的 function，返回 func_id 列表。
+def get_existed_trees_func_id(filename):
+    res = []
+    if os.path.exists(filename):
+        with open(filename, "r") as f:
+            for line in f.readlines():
+                l = line.strip()
+                if l=="":
+                    continue
+                item = json.loads(l)
+                if item['func_id'] not in res:
+                    res.append(item['func_id'])
+    return res
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Test for argparse')
     parser.add_argument('--cve_jsons_path', help='cve_jsons_path', type=str, default='ffmpeg_cve_jsons')
     parser.add_argument('--all_functions_file', help='all_functions_file', type=str, default= SAVE_PATH + '/all_functions.csv')
     parser.add_argument('--all_func_trees_file', help='all_func_trees_file', type=str, default= SAVE_PATH + '/all_functions_with_trees.csv')
+    parser.add_argument('--all_func_trees_json_file', help='all_func_trees_json_file', type=str, default= SAVE_PATH + '/all_functions_with_trees.json')
 
     parser.add_argument('--embedding_type', help='embedding_type', type=str, default= 'ref')
     parser.add_argument('--all_func_embedding_file', help='all_func_embedding_file', type=str, default= SAVE_PATH + '/all_func_embedding_ref.csv')
@@ -141,19 +158,30 @@ if __name__ == '__main__':
     logger.info("function2vec parameters %s", args)
 
     all_func_trees_file = args.all_func_trees_file
+    all_func_trees_json_file = args.all_func_trees_json_file
 
     if not os.path.exists(all_func_trees_file):
         # read cve jsons data
         data = read_cve_jsons(args.cve_jsons_path)
         df_functions = pd.DataFrame(data)
+        logger.info("len(df_functions): %d" % len(df_functions))
         if not os.path.exists(args.all_functions_file):
             df_functions.to_csv(args.all_functions_file, sep=',', index=None)
             print("saved to: ", args.all_functions_file)
             logger.info("saved to: %s" % args.all_functions_file)
 
         # get trees from code using Joern
-        logger.info("len(df_functions): %d" % len(df_functions) )
-        df_functions['trees'] = df_functions['code'].apply(generate_prolog)
+        existed = get_existed_trees_func_id(all_func_trees_json_file)
+        for i,item in enumerate(data):
+            if item['func_id'] in existed:
+                continue
+            data[i]['trees'] = generate_prolog(item['code'])
+            # save trees in a json file
+            with open(all_func_trees_json_file, "a") as fw:
+                fw.write(json.dumps(data[i]) + "\n")
+                logger.info("saved to: %s" % all_func_trees_json_file )
+        # save trees in a csv file
+        df_functions = pd.DataFrame(data)
         df_functions.to_csv(all_func_trees_file, sep=',', index=None)
         print("saved to:", all_func_trees_file)
         logger.info("saved to: %s" % all_func_trees_file)
