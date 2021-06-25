@@ -9,9 +9,11 @@
 import pandas as pd
 import os
 
-def read_jiahao_data(filename):
+def read_jiahao_data(filename, is_only_vul=0):
     df = pd.read_csv(filename)
     df = df.fillna('')
+    if is_only_vul == 1:
+        df = df[ df['vul'] == 1]
     projects = {}
     for index, row in df.iterrows():
         proj = row['project'].lower().strip()
@@ -142,6 +144,9 @@ def compare(jh_data, wb_data, to_file, jiahao_succ_cve_id_list):
     new_cves_cc_list = []
     new_commits_list = []
 
+    new_cves_unique = [] # 这里记一下相比 jiahao，我新找到的 cve 的。
+    new_cves_cc_unique = [] # 这里记一下相比 jiahao，我新找到的有 cc 的 cve。
+
 
     for p in wb_data.keys():
         cves = wb_data[p]
@@ -176,12 +181,12 @@ def compare(jh_data, wb_data, to_file, jiahao_succ_cve_id_list):
             if is_new_proj:
                 is_new_cve = 1
             else:
-                if cve not in jiahao_succ_cve_id_list:
+                if cve not in jh_data[p].keys():
                     is_new_cve = 1
 
             jh_func_names = []
             jh_commits = []
-            if not is_new_cve and p in jh_data.keys() and cve in jh_data[p].keys():
+            if p in jh_data.keys() and cve in jh_data[p].keys():
                 jh_funcs = jh_data[p][cve]
                 for ff in jh_funcs:
                     if ff['func_name'] not in jh_func_names:
@@ -232,8 +237,12 @@ def compare(jh_data, wb_data, to_file, jiahao_succ_cve_id_list):
                 cve_count_cc += 1
             if is_new_cve:
                 new_cves_count += 1
-            if cve_has_cc and is_new_cve:
+                if cve not in new_cves_unique:
+                    new_cves_unique.append(cve)
+            if cve_has_cc and cve not in jiahao_succ_cve_id_list:
                 new_cves_cc_count += 1
+                if cve not in new_cves_cc_unique:
+                    new_cves_cc_unique.append(cve)
             total_commits += len(commits_visted)
 
         project_list.append(p)
@@ -275,14 +284,17 @@ def compare(jh_data, wb_data, to_file, jiahao_succ_cve_id_list):
     })
     df.to_csv(to_file, index=False)
     print("saved to %s" % to_file)
+    print("new_cves_cc_unique: %d" % len(new_cves_cc_unique))
+    print("new_cves_unique: %d" % len(new_cves_unique))
+
 
 
 if __name__ == '__main__':
     jiahao_file = "jiahao_data_with_func_name_no_code.csv"
     to_jiahao_file = "jiahao_data_project_level.csv"
 
-    wenbo_file = "wenbo_data.csv"
-    to_wenbo_file = "wenbo_data_project_level.csv"
+    wenbo_file = "wenbo_data_with_commit_message2.csv"
+    to_wenbo_file = "wenbo_data_project_level_v2.csv"
 
     # df = pd.read_csv(wenbo_file)
     # print(len(df['cve_id'].unique()))
