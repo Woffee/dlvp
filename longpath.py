@@ -5,6 +5,12 @@
 使用 clang 参考：
 https://stackoverflow.com/questions/26000876/how-to-solve-the-loading-error-of-clangs-python-binding
 
+配置环境变量：
+export DYLD_LIBRARY_PATH=/usr/local/Cellar/llvm/11.1.0/lib/
+
+配置环境变量(PyCharm)：
+https://stackoverflow.com/questions/42708389/how-to-set-environment-variables-in-pycharm
+
 @Time    : 6/25/21
 @Author  : Wenbo
 """
@@ -143,7 +149,8 @@ def generate_natural_sequence(code):
 
 if __name__ == '__main__':
 
-    code = """int who_am_i (void)
+    code = """
+int who_am_i (void)
 {
   struct passwd *pw;
   char *user = NULL;
@@ -157,7 +164,13 @@ if __name__ == '__main__':
       return 1;
     }
   printf ("%s\n", user);
+  
+  fac(5);
   return 0;
+}
+
+int fac(int n) {
+    return (n>1) ? n*fac(n-1) : 1;
 }
 """
     ast_root = generate_ast_roots(code)
