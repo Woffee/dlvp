@@ -8,7 +8,22 @@
 
 
 python function2vec.py --cve_jsons_path data/jsons/FFmpeg_jsons \
+--embedding_type ref \
 --all_functions_file data/function2vec/all_functions.csv \
 --all_func_trees_file data/function2vec/all_functions_with_trees.csv \
 --all_func_trees_json_file data/function2vec/all_functions_with_trees.json \
---all_func_embedding_file data/function2vec/all_func_embedding_file.csv
+--all_func_embedding_file data/function2vec/all_func_embedding_file_ref.csv
+
+python function2vec.py --cve_jsons_path data/jsons/FFmpeg_jsons \
+--embedding_type def \
+--all_functions_file data/function2vec/all_functions.csv \
+--all_func_trees_file data/function2vec/all_functions_with_trees.csv \
+--all_func_trees_json_file data/function2vec/all_functions_with_trees.json \
+--all_func_embedding_file data/function2vec/all_func_embedding_file_def.csv
+
+python function2vec.py --cve_jsons_path data/jsons/FFmpeg_jsons \
+--embedding_type pdt \
+--all_functions_file data/function2vec/all_functions.csv \
+--all_func_trees_file data/function2vec/all_functions_with_trees.csv \
+--all_func_trees_json_file data/function2vec/all_functions_with_trees.json \
+--all_func_embedding_file data/function2vec/all_func_embedding_file_pdt.csv
