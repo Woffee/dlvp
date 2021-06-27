@@ -17,7 +17,9 @@ https://stackoverflow.com/questions/42708389/how-to-set-environment-variables-in
 import networkx as nx
 import os
 import clang.cindex
-
+import json
+import pandas as pd
+from gensim.models.word2vec import Word2Vec
 
 # # This cell might not be needed for you.
 # clang.cindex.Config.set_library_file(
@@ -136,7 +138,7 @@ def generate_long_path(ast_root):
     return long_path
 
 
-def generate_natural_sequence(code):
+def code2ns(code):
     res = []
     idx = clang.cindex.Index.create()
     tu = idx.parse('tmp.cpp', args=['-std=c++11'],
@@ -146,6 +148,266 @@ def generate_natural_sequence(code):
         res.append(t.spelling)
     return res
 
+def code2lp(code):
+    if code.strip()=="":
+        return json.dumps({
+            'nodes':[],
+            'edge_list': [],
+            'long_path': []
+        })
+
+    ast_root = generate_ast_roots(code)
+
+    # get edge
+    edge_list = generate_edgelist(ast_root)
+
+    # get nodes
+    nodes = generate_features(ast_root)
+
+    # get long path
+    long_path = generate_long_path(ast_root)
+
+    return json.dumps({
+        'nodes':nodes,
+        'edge_list': edge_list,
+        'long_path': long_path
+    })
+
+
+def preprocess_longpath(input_file, output_file):
+    # get longpath
+    all_data = pd.read_csv(input_file)
+    all_data = all_data.fillna('')
+
+    all_data["long_path_combine"] = None  # [[[[5, 4, 3, 2, 1, 2, 3, 6, 7], [0, 1, 13, 5]], 1],...,...]
+    all_data["long_path_greedy"] = None
+    all_data["long_path"] = None
+    all_data["nodes"] = None
+    all_data["edge_list"] = None
+    all_data["flaw_loc"] = None
+    all_data["longest_path_token_num"] = None
+    all_data["path_num"] = None
+
+    total = len(all_data)
+
+    for index, row in all_data.iterrows():
+        if index % 1000 == 0:
+            print("preprocess_longpath()... now: %d / %d" % (index, total) )
+
+        # get flaw line ?
+        flaw_loc = []
+
+        # flaw_line_code = row["lines_before"] # lines_before 只记录被修改的几行 code
+        # if not str(flaw_line_code) == "nan":
+        #     flaw_line_code = flaw_line_code.strip().split("\n")
+        #     for each_flaw_line in range(len(flaw_line_code)):
+        #         flaw_line_code[each_flaw_line] = flaw_line_code[each_flaw_line].strip()
+        #     code = row["func_before"].strip().split("\n")
+        #     for code_line in range(len(code)):
+        #         code[code_line] = code[code_line].strip()
+        #
+        #     for flaw_line in flaw_line_code:
+        #         for line_loc, line in enumerate(code):
+        #             if flaw_line == line:
+        #                 flaw_loc.append(line_loc)
+        # flaw_loc = list(set(flaw_loc))
+        # if len(flaw_loc) > 0:
+        #     all_data.loc[index, "flaw_loc"] = str(flaw_loc)
+
+
+        # get ast
+        code = row["code"]
+        code = code.split('\n')
+        line_1 = code[0]
+        pos = line_1.find("(")
+        if line_1.find("::") > 0:
+            if pos > 0:
+                scope_opr = line_1.rfind("::", 0, pos)
+            else:
+                scope_opr = line_1.rfind("::")
+            class_ = line_1.rfind(" ", 0, scope_opr)
+            line_1 = line_1.replace(line_1[class_:scope_opr + 2], " ")
+        code[0] = line_1
+        code = "\n".join(code)
+        ast_root = generate_ast_roots(code)
+
+        # get edge
+        edge_list = generate_edgelist(ast_root)
+
+        # get nodes
+        nodes = generate_features(ast_root)
+
+        # get long path
+        long_path = generate_long_path(ast_root)
+        if not ((len(long_path) == 1 and len(long_path[0]) == 2) or (len(long_path) == 0)):
+            all_data.loc[index, "long_path"] = str(long_path)
+            all_data.loc[index, "edge_list"] = str(edge_list)
+            all_data.loc[index, "nodes"] = str(nodes)
+
+            long_path_greedy = sorted(long_path, key=lambda i: len(i), reverse=True)
+
+            path_len = len(long_path_greedy)
+            long_path_greedy_2 = []
+            long_path_2 = []
+            i = 0
+            if path_len % 2 == 0:
+                while i < path_len:
+                    start1 = long_path_greedy[i][::-1]
+                    end1 = long_path_greedy[i + 1][1:]
+                    path1 = start1 + end1
+                    long_path_greedy_2.append(path1)
+
+                    start2 = long_path[i][::-1]
+                    end2 = long_path[i + 1][1:]
+                    path2 = start2 + end2
+                    long_path_2.append(path2)
+
+                    i += 2
+            else:
+                while i < path_len:
+                    if i == path_len - 1:
+                        start1 = long_path_greedy[i][::-1]
+                        end1 = long_path_greedy[i][1:]
+                        path1 = start1 + end1
+                        long_path_greedy_2.append(path1)
+
+                        start2 = long_path[i][::-1]
+                        end2 = long_path[i][1:]
+                        path2 = start2 + end2
+                        long_path_2.append(path2)
+                        i += 2
+                    else:
+                        start1 = long_path_greedy[i][::-1]
+                        end1 = long_path_greedy[i + 1][1:]
+                        path1 = start1 + end1
+                        long_path_greedy_2.append(path1)
+
+                        start2 = long_path[i][::-1]
+                        end2 = long_path[i + 1][1:]
+                        path2 = start2 + end2
+                        long_path_2.append(path2)
+
+                        i += 2
+
+            long_path_greedy_2_with_cover_lines = []
+            long_path_2_with_cover_lines = []
+
+            for each_path in long_path_greedy_2:
+                cover_lines = []
+                for node_id in each_path:
+                    cover_lines.append(nodes[node_id][3])
+                long_path_greedy_2_with_cover_lines.append([each_path, list(set(cover_lines))])
+
+            for each_path in long_path_2:
+                cover_lines = []
+                for node_id in each_path:
+                    cover_lines.append(nodes[node_id][3])
+                long_path_2_with_cover_lines.append([each_path, list(set(cover_lines))])
+
+            long_path_greedy_2_with_label = []
+            long_path_2_with_label = []
+
+            for each_path in long_path_greedy_2_with_cover_lines:
+                loc_find = False
+                for node_id in each_path[0]:
+                    if nodes[node_id][3] in flaw_loc:
+                        loc_find = True
+                if loc_find:
+                    long_path_greedy_2_with_label.append([each_path, 1])
+                else:
+                    long_path_greedy_2_with_label.append([each_path, 0])
+
+            for each_path in long_path_2_with_cover_lines:
+                loc_find = False
+                for node_id in each_path[0]:
+                    if nodes[node_id][3] in flaw_loc:
+                        loc_find = True
+                if loc_find:
+                    long_path_2_with_label.append([each_path, 1])
+                else:
+                    long_path_2_with_label.append([each_path, 0])
+
+            all_data.loc[index, "long_path_greedy"] = str(long_path_greedy_2_with_label)
+            all_data.loc[index, "long_path_combine"] = str(long_path_2_with_label)
+            all_data.loc[index, "path_num"] = len(long_path_2_with_label)
+            longest_path_token_num = 0
+            for path in long_path_2_with_label:
+                if len(path[0][0]) > longest_path_token_num:
+                    longest_path_token_num = len(path[0][0])
+            all_data.loc[index, "longest_path_token_num"] = longest_path_token_num
+
+    all_data.to_csv(output_file, sep=',', index=None)
+    print("saved to: %s" % output_file)
+
+def run_longpath(input_file, output_file):
+    # train word2vec
+    all_data = pd.read_csv(input_file)
+    all_data = all_data.fillna('')
+
+    all_data["long_path_greedy_context"] = None
+    all_data["long_path_combine_context"] = None
+
+    corpus_long_path_combine_context = []
+    corpus_long_path_greedy_context = []
+    for index, row in all_data.iterrows():
+
+        long_path_combine = eval(row["long_path_combine"])
+        long_path_greedy = eval(row["long_path_greedy"])
+        nodes = eval(row["nodes"])
+
+        long_path_combine_all_context = []
+        long_path_combine_each_context = []
+        for path in long_path_combine:
+            each_context = []
+            len_path = len(path[0][0])
+            i = 0
+            for node_id in path[0][0]:
+                if i == 0:
+                    long_path_combine_all_context.extend(nodes[node_id][2].split())
+                    each_context.append(nodes[node_id][2].split())
+                elif i == len(path[0][0]) - 1:
+                    long_path_combine_all_context.extend(nodes[node_id][2].split())
+                    each_context.append(nodes[node_id][2].split())
+                else:
+                    long_path_combine_all_context.append(nodes[node_id][1])
+                    each_context.append(nodes[node_id][1])
+                i += 1
+            long_path_combine_each_context.append([[each_context, path[0][1]], path[1]])
+
+        long_path_greedy_all_context = []
+        long_path_greedy_each_context = []
+        for path in long_path_greedy:
+            each_context = []
+            len_path = len(path[0][0])
+            i = 0
+            for node_id in path[0][0]:
+                if i == 0:
+                    long_path_greedy_all_context.extend(nodes[node_id][2].split())
+                    each_context.append(nodes[node_id][2].split())
+                elif i == len(path[0][0]) - 1:
+                    long_path_greedy_all_context.extend(nodes[node_id][2].split())
+                    each_context.append(nodes[node_id][2].split())
+                else:
+                    long_path_greedy_all_context.append(nodes[node_id][1])
+                    each_context.append(nodes[node_id][1])
+                i += 1
+            long_path_greedy_each_context.append([[each_context, path[0][1]], path[1]])
+
+        all_data.loc[index, "long_path_greedy_context"] = str(long_path_greedy_each_context)
+        all_data.loc[index, "long_path_combine_context"] = str(long_path_combine_each_context)
+
+        corpus_long_path_combine_context.append(long_path_combine_all_context)
+        corpus_long_path_greedy_context.append(long_path_greedy_all_context)
+        if index % 999 == 0:
+            print(index)
+
+    w2v_long_path_combine_context = Word2Vec(corpus_long_path_combine_context, size=128, workers=16, sg=1, min_count=1)
+    w2v_long_path_combine_context.save('./data/combine_context_node_w2v_' + str(128))
+
+    w2v_long_path_greedy_context = Word2Vec(corpus_long_path_greedy_context, size=128, workers=16, sg=1, min_count=1)
+    w2v_long_path_greedy_context.save('./data/greedy_context_node_w2v_' + str(128))
+
+    # get embeddings
 
 if __name__ == '__main__':
 

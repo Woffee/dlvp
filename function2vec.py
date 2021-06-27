@@ -16,6 +16,7 @@ import time
 import logging
 import hashlib
 import preprocess_code
+import longpath
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 SAVE_PATH = BASE_DIR + "/data/function2vec"
@@ -83,6 +84,8 @@ def find_functions(functions, cve_id, commit_id, vul, lv=0):
                 item['callers'].append(sub_f['func_id'])
     return res
 
+
+# 这里统计的规则是：只要有 function body，无论有无 caller、callee 都行。
 def read_cve_jsons(folder_path):
     functions = []
 
@@ -221,6 +224,23 @@ if __name__ == '__main__':
                                                                                  "CFG","REF", num_partitions=10, PDT=True)
         output_file = args.all_func_embedding_file
         preprocess_code.run_graph2vec(graph2vec_input_dir, output_file, num_graph2vec_workers=2, num_epoch=10)
+
+    # LP
+    elif embedding_type == 'lp':
+        tmp_directory = tempfile.TemporaryDirectory()
+        input_file = args.all_func_trees_file
+        all_functions_with_lp_file = SAVE_PATH + '/all_functions_with_trees_lp.csv'
+        if not os.path.exists(all_functions_with_lp_file):
+            longpath.preprocess_longpath(input_file, all_functions_with_lp_file)
+
+        output_file = args.all_func_embedding_file
+        # longpath.run_longpath(all_functions_with_lp_file, output_file)
+
+
+    # NS
+    elif embedding_type == 'ns':
+        pass
+
 
 
     print("done")
