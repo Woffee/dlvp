@@ -26,7 +26,7 @@ preprocess_output_location = BASE_DIR + "/data/preprocess"
 joern_path = "/opt/joern/"
 
 # make dirs
-folders = ['data/', 'logs/', 'projects/', 'data/function2vec', "data/preprocess"]
+folders = ['data/', 'logs/', 'projects/', 'data/function2vec', "data/preprocess", 'data/function2vec/models']
 for f in folders:
     if not os.path.exists(f):
         os.makedirs(f)
@@ -234,8 +234,9 @@ if __name__ == '__main__':
             longpath.preprocess_longpath(input_file, all_functions_with_lp_file)
 
         output_file = args.all_func_embedding_file
-        # longpath.run_longpath(all_functions_with_lp_file, output_file)
-
+        w2v_lp_model_file_combine = SAVE_PATH + "/models/w2v_lp_combine.bin"
+        w2v_lp_model_file_greedy = SAVE_PATH + "/models/w2v_lp_greedy.bin"
+        longpath.run_longpath(all_functions_with_lp_file, output_file, w2v_lp_model_file_combine, w2v_lp_model_file_greedy)
 
     # NS
     elif embedding_type == 'ns':

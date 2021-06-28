@@ -20,11 +20,13 @@ import clang.cindex
 import json
 import pandas as pd
 from gensim.models.word2vec import Word2Vec
+import numpy as np
 
 # # This cell might not be needed for you.
-# clang.cindex.Config.set_library_file(
-#     '/usr/lib/llvm-7/lib/libclang-7.so.1'
-# )
+if os.path.exists("ubuntu_only.txt"):
+    clang.cindex.Config.set_library_file(
+        '/usr/lib/llvm-8/lib/libclang-8.so.1'
+    )
 
 
 def generate_ast_roots(code):
@@ -339,7 +341,27 @@ def preprocess_longpath(input_file, output_file):
     all_data.to_csv(output_file, sep=',', index=None)
     print("saved to: %s" % output_file)
 
-def run_longpath(input_file, output_file):
+def tokens2vec(tokens, w2v):
+    length = len(tokens)
+    matrix = np.zeros((length, 128)) #word embedding size is 100
+    for i, ww in enumerate(tokens):
+        if i >= length:
+            break
+        if ww in w2v.wv.vocab:
+            matrix[i] = np.array(w2v.wv[ww])
+
+    #l2 normalize
+    try:
+        norm = np.linalg.norm(matrix, axis=1).reshape(length, 1)
+        matrix = np.divide(matrix, norm, out=np.zeros_like(matrix), where=norm!=0)
+        #matrix = matrix / np.linalg.norm(matrix, axis=1).reshape(len(doc), 1)
+    except RuntimeWarning:
+        print(tokens)
+
+    #matrix = np.array(preprocessing.normalize(matrix, norm='l2'))
+    return np.array(np.mean(matrix, axis=0))
+
+def run_longpath(input_file, output_file, w2v_lp_model_file_combine, w2v_lp_model_file_greedy):
     # train word2vec
     all_data = pd.read_csv(input_file)
     all_data = all_data.fillna('')
@@ -350,6 +372,8 @@ def run_longpath(input_file, output_file):
     corpus_long_path_combine_context = []
     corpus_long_path_greedy_context = []
     for index, row in all_data.iterrows():
+        if row["long_path_combine"]=='' or row["long_path_greedy"]=='' or row["nodes"]=='':
+            continue
 
         long_path_combine = eval(row["long_path_combine"])
         long_path_greedy = eval(row["long_path_greedy"])
@@ -398,16 +422,65 @@ def run_longpath(input_file, output_file):
 
         corpus_long_path_combine_context.append(long_path_combine_all_context)
         corpus_long_path_greedy_context.append(long_path_greedy_all_context)
-        if index % 999 == 0:
+        if index % 1000 == 0:
             print(index)
 
     w2v_long_path_combine_context = Word2Vec(corpus_long_path_combine_context, size=128, workers=16, sg=1, min_count=1)
-    w2v_long_path_combine_context.save('./data/combine_context_node_w2v_' + str(128))
+    w2v_long_path_combine_context.save(w2v_lp_model_file_combine)
+    print("saved to: %s" % w2v_lp_model_file_combine)
 
     w2v_long_path_greedy_context = Word2Vec(corpus_long_path_greedy_context, size=128, workers=16, sg=1, min_count=1)
-    w2v_long_path_greedy_context.save('./data/greedy_context_node_w2v_' + str(128))
+    w2v_long_path_greedy_context.save(w2v_lp_model_file_greedy)
+    print("saved to: %s" % w2v_lp_model_file_greedy)
 
     # get embeddings
+
+    greedy_path_embedding = []
+    combine_path_embedding = []
+    for index, row in all_data.iterrows():
+        func_id = row['func_id']
+
+        if row['long_path_greedy_context'] == '' or row["long_path_combine_context"]=='':
+            continue
+
+        long_path_greedy_context = eval(row["long_path_greedy_context"])
+        long_path_combine_context = eval(row["long_path_combine_context"])
+
+        function_paths_greedy = []
+        for path in long_path_greedy_context:
+            path_embedding = []
+            for token in path[0][0]:
+                if type(token).__name__ == 'list':
+                    sum_avg = tokens2vec(token, w2v_long_path_greedy_context)
+                    if not len(token) == 0:
+                        path_embedding.append(sum_avg)
+                else:
+                    if token in w2v_long_path_greedy_context.wv.vocab:
+                        path_embedding.append(w2v_long_path_greedy_context.wv.vocab[token])
+            function_paths_greedy.append(path_embedding)
+        greedy_path_embedding.append(function_paths_greedy)
+
+
+        function_paths_combine = []
+        combine_path_lable = []
+        for path in long_path_combine_context:
+            lable = path[1]
+            combine_path_lable.append(lable)
+            path_embedding = []
+            for token in path[0][0]:
+                if type(token).__name__ == 'list':
+                    sum_avg = tokens2vec(token, w2v_long_path_combine_context)
+                    if not len(token) == 0:
+                        path_embedding.append(sum_avg)
+                else:
+                    if token in w2v_long_path_combine_context.wv.vocab:
+                        path_embedding.append(w2v_long_path_combine_context.wv.vocab[token])
+            function_paths_combine.append(path_embedding)
+        combine_path_embedding.append(function_paths_combine)
+
+
+
+
 
 if __name__ == '__main__':
 
