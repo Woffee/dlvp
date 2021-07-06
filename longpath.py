@@ -347,6 +347,24 @@ def preprocess_longpath(input_file, output_file):
     all_data.to_csv(output_file, sep=',', index=None)
     print("saved to: %s" % output_file)
 
+def tokens2matrix(tokens, w2v, length):
+    matrix = np.zeros((length, 128))  # word embedding size is 100
+    for i, ww in enumerate(tokens):
+        if i >= length:
+            break
+        if ww in w2v.wv.vocab:
+            matrix[i] = np.array(w2v.wv[ww])
+
+    # l2 normalize
+    try:
+        norm = np.linalg.norm(matrix, axis=1).reshape(length, 1)
+        matrix = np.divide(matrix, norm, out=np.zeros_like(matrix), where=norm != 0)
+        # matrix = matrix / np.linalg.norm(matrix, axis=1).reshape(len(doc), 1)
+    except RuntimeWarning:
+        print(tokens)
+
+    return matrix
+
 def tokens2vec(tokens, w2v):
     length = len(tokens)
     matrix = np.zeros((length, 128)) #word embedding size is 100
@@ -473,14 +491,14 @@ def run_longpath(input_file, output_file, w2v_lp_model_file_combine, w2v_lp_mode
             path_embedding = np.zeros((max_path_length, 128))
             for i, token in enumerate( path[0][0] ):
                 if type(token).__name__ == 'list':
-                    logging.info("== token is list?: yes")
-                    print("== token is list?: yes")
+                    # logging.info("== token is list?: yes")
+                    # print("== token is list?: yes")
                     sum_avg = tokens2vec(token, w2v_long_path_greedy_context)
                     if not len(token) == 0:
                         path_embedding[i] = sum_avg
                 else:
-                    logging.info("== token is list?: no")
-                    print("== token is list?: no")
+                    # logging.info("== token is list?: no")
+                    # print("== token is list?: no")
                     if token in w2v_long_path_greedy_context.wv.vocab:
                         # path_embedding.append(w2v_long_path_greedy_context.wv.vocab[token])
                         path_embedding[i] = w2v_long_path_greedy_context.wv[token]
@@ -514,6 +532,44 @@ def run_longpath(input_file, output_file, w2v_lp_model_file_combine, w2v_lp_mode
     print("saved to %s" % to_file_combine)
     print("saved to %s" % to_file_greedy)
 
+def run_ns(input_file, output_file, w2v_ns_model):
+    all_data = pd.read_csv(input_file)
+    all_data = all_data.fillna('')
+
+    # preprocess for word2vec
+    total = len(all_data)
+    corpus_ns = []
+    max_length = -1
+    ns_data = {}
+    for index, row in all_data.iterrows():
+        if index % 1000 == 0:
+            print("== run_ns()... now: %d / %d" % (index, total))
+        if row['code'].strip() == '':
+            continue
+
+        func_id = row['func_id']
+        ns = code2ns(row['code'])
+        ns_data[func_id] = ns
+
+        max_length = max(max_length, len(ns))
+        corpus_ns.append(ns)
+
+
+    # train word2vec model
+    w2v_ns = Word2Vec(corpus_ns, size=128, workers=16, sg=1, min_count=1)
+    w2v_ns.save(w2v_ns_model)
+    print("saved to: %s" % w2v_ns_model)
+
+    # get embeddings
+    to_data = {}
+    for k in ns_data.keys():
+        ns = ns_data[k]
+        matrix = tokens2matrix(ns, w2v_ns, max_length)
+        to_data[k] = matrix
+
+    pickle.dump(to_data, open(output_file, "wb"))
+    print("saved to %s" % output_file)
+    logging.info("saved to %s" % output_file)
 
 
 if __name__ == '__main__':

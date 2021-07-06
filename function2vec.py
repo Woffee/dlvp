@@ -240,7 +240,11 @@ if __name__ == '__main__':
 
     # NS
     elif embedding_type == 'ns':
-        pass
+        input_file = args.all_func_trees_file
+        output_file = args.all_func_embedding_file
+        w2v_ns_model = SAVE_PATH + "/models/w2v_ns.bin"
+        longpath.run_ns(input_file, output_file, w2v_ns_model)
+
 
 
 
