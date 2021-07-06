@@ -152,7 +152,7 @@ def code2ns(code):
     tu = idx.parse('tmp.cpp', args=['-std=c++11'],
                    unsaved_files=[('tmp.cpp', code)], options=0)
     for t in tu.get_tokens(extent=tu.cursor.extent):
-        print(t.kind, t.spelling, t.location)
+        # print(t.kind, t.spelling, t.location)
         res.append(t.spelling)
     return res
 
@@ -348,6 +348,14 @@ def preprocess_longpath(input_file, output_file):
     print("saved to: %s" % output_file)
 
 def tokens2matrix(tokens, w2v, length):
+    """
+
+
+    :param tokens:
+    :param w2v: w2v model
+    :param length: max tokens length
+    :return: matrix
+    """
     matrix = np.zeros((length, 128))  # word embedding size is 100
     for i, ww in enumerate(tokens):
         if i >= length:
@@ -554,13 +562,27 @@ def run_ns(input_file, output_file, w2v_ns_model):
         max_length = max(max_length, len(ns))
         corpus_ns.append(ns)
 
+    print("== ns max_length: %d" % max_length)
+    print("== len(corpus_ns): %d" % len(corpus_ns))
+    logging.info("== ns max_length: %d" % max_length)
+    logging.info("== len(corpus_ns): %d" % len(corpus_ns))
 
     # train word2vec model
     w2v_ns = Word2Vec(corpus_ns, size=128, workers=16, sg=1, min_count=1)
     w2v_ns.save(w2v_ns_model)
     print("saved to: %s" % w2v_ns_model)
+    logging.info("saved to: %s" % w2v_ns_model)
+
+    """
+    2021-07-06 17:40:36 INFO longpath.py line: 559 - == ns max_length: 33201
+    2021-07-06 17:40:36 INFO longpath.py line: 560 - == len(corpus_ns): 15719
+    """
 
     # get embeddings
+    # TODO：length 太长会报错内存不够，128G 也不够用
+    if max_length > 2000:
+        max_length = 2000
+
     to_data = {}
     for k in ns_data.keys():
         ns = ns_data[k]
