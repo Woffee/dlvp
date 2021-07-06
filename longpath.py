@@ -21,6 +21,12 @@ import json
 import pandas as pd
 from gensim.models.word2vec import Word2Vec
 import numpy as np
+import logging
+
+try:
+   import cPickle as pickle
+except:
+   import pickle
 
 # # This cell might not be needed for you.
 if os.path.exists("ubuntu_only.txt"):
@@ -434,51 +440,79 @@ def run_longpath(input_file, output_file, w2v_lp_model_file_combine, w2v_lp_mode
     print("saved to: %s" % w2v_lp_model_file_greedy)
 
     # get embeddings
+    to_data_combine = {}
+    to_data_greedy = {}
 
-    greedy_path_embedding = []
-    combine_path_embedding = []
+    # greedy_path_embedding = []
+    # combine_path_embedding = []
     for index, row in all_data.iterrows():
         func_id = row['func_id']
 
         if row['long_path_greedy_context'] == '' or row["long_path_combine_context"]=='':
             continue
 
-        long_path_greedy_context = eval(row["long_path_greedy_context"])
-        long_path_combine_context = eval(row["long_path_combine_context"])
+        try:
+            long_path_greedy_context = eval(row["long_path_greedy_context"])
+            long_path_combine_context = eval(row["long_path_combine_context"])
+        except:
+            continue
+
+        # get max path length
+        max_path_length = -1
+        for path in long_path_greedy_context:
+            max_path_length = max(max_path_length, len(path[0][0]))
+        for path in long_path_combine_context:
+            max_path_length = max(max_path_length, len(path[0][0]))
+        print("max_path_length: ", max_path_length)
+        logging.info("== max_path_length: %d "% max_path_length)
+
 
         function_paths_greedy = []
         for path in long_path_greedy_context:
-            path_embedding = []
-            for token in path[0][0]:
+            # path_embedding = [] # matrix
+            path_embedding = np.zeros((max_path_length, 128))
+            for i, token in enumerate( path[0][0] ):
                 if type(token).__name__ == 'list':
+                    logging.info("== token is list?: yes")
+                    print("== token is list?: yes")
                     sum_avg = tokens2vec(token, w2v_long_path_greedy_context)
                     if not len(token) == 0:
-                        path_embedding.append(sum_avg)
+                        path_embedding[i] = sum_avg
                 else:
+                    logging.info("== token is list?: no")
+                    print("== token is list?: no")
                     if token in w2v_long_path_greedy_context.wv.vocab:
-                        path_embedding.append(w2v_long_path_greedy_context.wv.vocab[token])
+                        # path_embedding.append(w2v_long_path_greedy_context.wv.vocab[token])
+                        path_embedding[i] = w2v_long_path_greedy_context.wv[token]
             function_paths_greedy.append(path_embedding)
-        greedy_path_embedding.append(function_paths_greedy)
+        to_data_greedy[func_id] = function_paths_greedy
+        # greedy_path_embedding.append(function_paths_greedy)
 
 
         function_paths_combine = []
-        combine_path_lable = []
         for path in long_path_combine_context:
-            lable = path[1]
-            combine_path_lable.append(lable)
-            path_embedding = []
-            for token in path[0][0]:
+            # path_embedding = []
+            path_embedding = np.zeros((max_path_length, 128))
+            for i,token in enumerate(path[0][0]):
                 if type(token).__name__ == 'list':
                     sum_avg = tokens2vec(token, w2v_long_path_combine_context)
                     if not len(token) == 0:
-                        path_embedding.append(sum_avg)
+                        # path_embedding.append(sum_avg)
+                        path_embedding[i] = sum_avg
                 else:
                     if token in w2v_long_path_combine_context.wv.vocab:
-                        path_embedding.append(w2v_long_path_combine_context.wv.vocab[token])
+                        # path_embedding.append(w2v_long_path_combine_context.wv.vocab[token])
+                        path_embedding[i] = w2v_long_path_greedy_context.wv[token]
             function_paths_combine.append(path_embedding)
-        combine_path_embedding.append(function_paths_combine)
+        # combine_path_embedding.append(function_paths_combine)
+        to_data_combine[func_id] = function_paths_combine
+    to_file_combine = output_file + ".combine"
+    to_file_greedy = output_file + ".greedy"
 
-
+    pickle.dump(to_data_combine, open(to_file_combine, "wb"))
+    pickle.dump(to_data_greedy, open(to_file_greedy, "wb"))
+    print("saved to %s" % to_file_combine)
+    print("saved to %s" % to_file_greedy)
 
 
 
