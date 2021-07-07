@@ -26,6 +26,8 @@ import matplotlib.pyplot as plt
 import pandas as pd
 import os
 
+import logging
+
 
 try:
    import cPickle as pickle
@@ -34,6 +36,14 @@ except:
 
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+# log file
+now_time = time.strftime("%Y-%m-%d_%H-%M", time.localtime())
+logging.basicConfig(level=logging.INFO,
+                    format='%(asctime)s %(levelname)s %(filename)s line: %(lineno)s - %(message)s',
+                    datefmt='%Y-%m-%d %H:%M:%S',
+                    filename=BASE_DIR + '/logs/' + now_time + '.log')
+logger = logging.getLogger(__name__)
 
 
 class GNNStack(nn.Module):
@@ -48,21 +58,35 @@ class GNNStack(nn.Module):
         super(GNNStack, self).__init__()
         self.task = task
 
+        self.lp_path_num = lp_path_num
+        self.lp_length = lp_length
+        self.ns_length = ns_length
+
 
         # LP: (lp_path_num, lp_length, lp_dim)
-        self.lp_conv1 = nn.Conv2d(lp_path_num, 6, kernel_size=5, padding=2) # (6, lp_length, lp_dim)
-        self.lp_pool1 = nn.MaxPool2d(2, 2)
-        self.lp_conv2 = nn.Conv2d(6, 16, kernel_size=5, padding=2) # (16, lp_length / 2, lp_dim / 2)
-        self.lp_pool2 = nn.MaxPool2d(2, 2)
-        self.lp_fc = nn.Linear(16 * (lp_length/4) * (lp_dim/4), 128)
+        # self.lp_conv1 = nn.Conv2d(lp_path_num, 6, kernel_size=5, padding=2) # (6, lp_length, lp_dim)
+        # self.lp_pool1 = nn.MaxPool2d(2, 2)
+        # self.lp_conv2 = nn.Conv2d(6, 16, kernel_size=5, padding=2) # (16, lp_length / 2, lp_dim / 2)
+        # self.lp_pool2 = nn.MaxPool2d(2, 2)
+        # self.lp_fc = nn.Linear(16 * (lp_length/4) * (lp_dim/4), 128)
+        self.lp_grus = nn.ModuleList()
+        for l in range(lp_path_num):
+            self.lp_grus.append(nn.GRU(128, lp_length, 1, batch_first=True))
+        self.lp_fc = nn.Linear(128 * lp_path_num, 128)
 
         # NS: (1, ns_length, ns_dim)
-        self.ns_conv1 = nn.Conv2d(1, 6, kernel_size=5, padding=2)  # (6, ns_length, ns_dim)
-        self.ns_pool1 = nn.MaxPool2d(2, 2)
-        self.ns_conv2 = nn.Conv2d(6, 16, kernel_size=5, padding=2)  # (16, ns_length / 2, ns_dim / 2)
-        self.ns_pool2 = nn.MaxPool2d(2, 2)
-        self.ns_fc = nn.Linear(16 * (ns_length / 4) * (ns_dim / 4), 128)
+        # self.ns_conv1 = nn.Conv2d(1, 6, kernel_size=5, padding=2)  # (6, ns_length, ns_dim)
+        # self.ns_pool1 = nn.MaxPool2d(2, 2)
+        # self.ns_conv2 = nn.Conv2d(6, 16, kernel_size=5, padding=2)  # (16, ns_length / 2, ns_dim / 2)
+        # self.ns_pool2 = nn.MaxPool2d(2, 2)
+        # self.ns_fc = nn.Linear(16 * (ns_length / 4) * (ns_dim / 4), 128)
+        self.ns_gru = nn.GRU(128, ns_length, 1, batch_first=True)
 
+        # 5 个 embedding 合到一起
+        self.all_fc = nn.Linear(128 * 5, 128)
+
+
+        # Graph conv
         self.convs = nn.ModuleList()
         self.convs.append(self.build_conv_model(input_dim, hidden_dim))
         self.lns = nn.ModuleList()
@@ -96,13 +120,46 @@ class GNNStack(nn.Module):
         xs, edge_index, batch = data.xs, data.edge_index, data.batch
         # if data.num_node_features == 0:
         #   x = torch.ones(data.num_nodes, 1)
+        logger.info("xs.length: %d" % len(xs) )
 
         # combine DEF, REF, PDT, LP, NS --> x
-        x_pdt = xs['pdt']
-        x_ref = xs['ref']
-        x_def = xs['def']
-        x_lp = xs['lp']
-        x_ns = xs['ns']
+        # x_pdt = xs['pdt']
+        # x_ref = xs['ref']
+        # x_def = xs['def']
+        # x_lp = xs['lp']
+        # x_ns = xs['ns']
+
+        x_pdt = []
+        x_ref = []
+        x_def = []
+        x_lp = []
+        x_ns = []
+        for v_batch in xs:
+            # print("vvv:", v)
+            for v in v_batch:
+                x_pdt.append(v['pdt'])
+                x_ref.append(v['ref'])
+                x_def.append(v['def'])
+                x_lp.append(v['lp'])
+                x_ns.append(v['ns'])
+        x_pdt = torch.tensor(x_pdt, dtype=torch.float)
+        x_ref = torch.tensor(x_ref, dtype=torch.float)
+        x_def = torch.tensor(x_def, dtype=torch.float)
+        x_lp = torch.tensor(x_lp, dtype=torch.float)
+        x_ns = torch.tensor(x_ns, dtype=torch.float)
+
+        # LP
+        gru_output_list = []
+        for i in range(self.lp_path_num):
+            gru_output_list.append( self.lp_grus[i]( x_lp[i] ) )
+        x_lp = torch.cat(gru_output_list)
+        x_lp = self.lp_fc(x_lp)
+
+        # NS
+        x_ns = self.ns_gru(x_ns)
+
+        # concatenate together
+        x = self.all_fc(torch.cat( [x_pdt, x_ref, x_def, x_lp, x_ns]))
 
         for i in range(self.num_layers):
             x = self.convs[i](x, edge_index)
@@ -194,10 +251,22 @@ def train(dataset, task, writer):
     else:
         test_loader = loader = DataLoader(dataset, batch_size=64, shuffle=True)
 
+    # lp_path_num, lp_length, lp_dim, ns_length, ns_dim,
+    lp_length = dataset[0].xs[0]['lp'][0].shape[0]
+    ns_length = dataset[0].xs[0]['ns'].shape[0]
+    logger.info("== lp_length: %d" % lp_length)
+    logger.info("== ns_length: %d" % ns_length)
+
+
     # build model
-    model = GNNStack(input_dim=max(dataset.num_node_features, 1),
+    model = GNNStack(input_dim=128,
                      hidden_dim=32,
-                     output_dim=dataset.num_classes,
+                     output_dim=2,
+                     lp_path_num = 20,
+                     lp_length = lp_length,
+                     lp_dim = 128,
+                     ns_length = ns_length,
+                     ns_dim=128,
                      task=task)
     print("len(model.convs):", len(model.convs))
 
@@ -226,6 +295,8 @@ def train(dataset, task, writer):
             test_acc = test(test_loader, model)
             print("Epoch {}. Loss: {:.4f}. Test accuracy: {:.4f}".format(
                 epoch, total_loss, test_acc))
+            logger.info("Epoch {}. Loss: {:.4f}. Test accuracy: {:.4f}".format(
+                epoch, total_loss, test_acc))
             writer.add_scalar("test accuracy", test_acc, epoch)
 
     return model
@@ -252,9 +323,9 @@ def read_my_data(save_path):
     # read files
     df_all_funcs = pd.read_csv(all_funcs_lp_file)
 
-    df_emb_def = pd.read_csv(emb_file_def)
-    df_emb_ref = pd.read_csv(emb_file_ref)
-    df_emb_pdt = pd.read_csv(emb_file_pdt)
+    df_emb_def = pd.read_csv(emb_file_def).drop(columns=['type']).values
+    df_emb_ref = pd.read_csv(emb_file_ref).drop(columns=['type']).values
+    df_emb_pdt = pd.read_csv(emb_file_pdt).drop(columns=['type']).values
 
     emb_lp_combine = pickle.load(open(emb_file_lp_combine,"rb"))
     emb_lp_greedy  = pickle.load(open(emb_file_lp_greedy,"rb"))
@@ -283,47 +354,104 @@ def read_my_data(save_path):
     len(emb_ns): 15719
     """
 
+    x = []
+    edge_index = []
+    y = []
+    xs = []
 
+    dataset = []
+    for index, row in df_all_funcs.iterrows():
+        func_id = int(row['func_id'])
+        if not (func_id in emb_lp_combine.keys() and func_id in emb_ns.keys()):
+            continue
 
+        x.append([0])
+        if row['callees'].strip() != "[]":
+            logger.info("== callees != []")
+            callees = row['callees'].strip().replace("[", "").replace("]","").replace(" ", "" ).split(",")
+            logger.info("== len(callees):%d" % len(callees))
+            for ce in callees:
+                edge_index.append([ int(row['func_id']), int(ce) ])
+        if row['callers'].strip() != "[]":
+            callers = row['callers'].strip().replace("[", "").replace("]","").replace(" ", "" ).split(",")
+            for cr in callers:
+                edge_index.append([ int(cr), int(row['func_id']) ])
+
+        xs.append({
+            'lp': emb_lp_combine[func_id],
+            'ns': emb_ns[func_id],
+            'def': df_emb_def[index],
+            'ref': df_emb_ref[index],
+            'pdt': df_emb_pdt[index]
+        })
+
+        if int(row['is_center']) == 1:
+            # y.append(int(row['vul']))
+            # edge_index = np.array(edge_index)
+            # edge_index = edge_index - edge_index.min()
+            x = torch.tensor(x, dtype=torch.float)
+            edge_index = torch.tensor(edge_index, dtype=torch.long)
+            if edge_index.shape[0] > 0:
+                edge_index = edge_index - edge_index.min()
+
+            if int(row['vul']) == 1:
+                y = torch.tensor([1, 0], dtype=torch.long)
+            else:
+                y = torch.tensor([0, 1], dtype=torch.long)
+
+            data = Data(x=x, edge_index=edge_index.t().contiguous(), xs=xs, y=y)
+            dataset.append(data)
+            x = []
+            edge_index = []
+            y = []
+            xs = []
+    # loader = DataLoader(dataset, batch_size=2, shuffle=True)
+    # return loader
+
+    return dataset
 
 
 
 
 if __name__ == '__main__':
     # save_path = '/xye_data_nobackup/wenbo/dlvp/data/function2vec'
-    save_path = BASE_DIR + "/data/function2vec"
-    read_my_data(save_path)
-    exit()
+    # save_path = BASE_DIR + "/data/function2vec"
+    # read_my_data(save_path)
+    # exit()
 
 
-    edge_index = torch.tensor([[0, 1],
-                               [1, 0],
-                               [1, 2],
-                               [2, 1]], dtype=torch.long)
-    x = torch.tensor([[-1], [0], [1]], dtype=torch.float)
-    xs = [
-        {
-            'lp': torch.tensor([[-1], [0], [1]], dtype=torch.float)
-        },
-        {
-            'lp': torch.tensor([[-1], [0], [1]], dtype=torch.float)
-        },
-        {
-            'lp': torch.tensor([[-1], [0], [1]], dtype=torch.float)
-        },
-    ]
-    data = Data(x=x, edge_index=edge_index.t().contiguous(), xs = xs)
-    loader = DataLoader([data], batch_size=2, shuffle=True)
-    for batch_data in loader:
-        xs, edge_index, batch = batch_data.xs, batch_data.edge_index, batch_data.batch
-        print("???", xs)
-    exit()
+    # edge_index = torch.tensor([[10, 11],
+    #                            [11, 10],
+    #                            [11, 12],
+    #                            [12, 11]], dtype=torch.long)
+    # x = torch.tensor([[-1], [0], [1]], dtype=torch.float)
+    # xs = [
+    #     {
+    #         'lp': torch.tensor([[-1], [0], [1]], dtype=torch.float)
+    #     },
+    #     {
+    #         'lp': torch.tensor([[-1], [0], [1]], dtype=torch.float)
+    #     },
+    #     {
+    #         'lp': torch.tensor([[-1], [0], [1]], dtype=torch.float)
+    #     },
+    # ]
+    # data = Data(x=x, edge_index=edge_index.t().contiguous(), xs = xs)
+    # loader = DataLoader([data], batch_size=2, shuffle=True)
+    # for batch_data in loader:
+    #     xs, edge_index, batch = batch_data.xs, batch_data.edge_index, batch_data.batch
+    #     print("???", xs)
+    #     print("===", edge_index)
+    # exit()
 
 
     writer = SummaryWriter("./log/" + datetime.now().strftime("%Y%m%d-%H%M%S"))
 
-    dataset = TUDataset(root='/tmp/PROTEINS', name='PROTEINS')
-    dataset = dataset.shuffle()
+    # dataset = TUDataset(root='/tmp/PROTEINS', name='PROTEINS')
+    # dataset = dataset.shuffle()
+
     task = 'graph'
+    save_path = BASE_DIR + "/data/function2vec"
+    dataset = read_my_data(save_path)
 
     model = train(dataset, task, writer)
