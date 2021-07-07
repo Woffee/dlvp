@@ -469,6 +469,26 @@ def run_longpath(input_file, output_file, w2v_lp_model_file_combine, w2v_lp_mode
     to_data_combine = {}
     to_data_greedy = {}
 
+    max_path_length = -1
+    for index, row in all_data.iterrows():
+        if row['long_path_greedy_context'] == '' or row["long_path_combine_context"]=='':
+            continue
+
+        try:
+            long_path_greedy_context = eval(row["long_path_greedy_context"])
+            long_path_combine_context = eval(row["long_path_combine_context"])
+        except:
+            continue
+
+        # get max path length
+        for path in long_path_greedy_context:
+            max_path_length = max(max_path_length, len(path[0][0]))
+        for path in long_path_combine_context:
+            max_path_length = max(max_path_length, len(path[0][0]))
+
+    print("max_path_length: ", max_path_length)
+    logging.info("== max_path_length: %d "% max_path_length)
+
     # greedy_path_embedding = []
     # combine_path_embedding = []
     for index, row in all_data.iterrows():
@@ -484,13 +504,13 @@ def run_longpath(input_file, output_file, w2v_lp_model_file_combine, w2v_lp_mode
             continue
 
         # get max path length
-        max_path_length = -1
-        for path in long_path_greedy_context:
-            max_path_length = max(max_path_length, len(path[0][0]))
-        for path in long_path_combine_context:
-            max_path_length = max(max_path_length, len(path[0][0]))
-        print("max_path_length: ", max_path_length)
-        logging.info("== max_path_length: %d "% max_path_length)
+        # max_path_length = -1
+        # for path in long_path_greedy_context:
+        #     max_path_length = max(max_path_length, len(path[0][0]))
+        # for path in long_path_combine_context:
+        #     max_path_length = max(max_path_length, len(path[0][0]))
+        # print("max_path_length: ", max_path_length)
+        # logging.info("== max_path_length: %d "% max_path_length)
 
 
         function_paths_greedy = []
