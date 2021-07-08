@@ -45,13 +45,15 @@ logging.basicConfig(level=logging.INFO,
                     filename=BASE_DIR + '/logs/' + now_time + '.log')
 logger = logging.getLogger(__name__)
 
+LP_PATH_NUM = 20
+BATCH_SIZE = 64
 
 class GNNStack(nn.Module):
 
     def __init__(self, input_dim, hidden_dim, output_dim, lp_path_num, lp_length, lp_dim, ns_length, ns_dim, task='node'):
         """
         :param input_dim: max(dataset.num_node_features, 1)
-        :param hidden_dim: 32
+        :param hidden_dim: 128
         :param output_dim: dataset.num_classes
         :param task: 'node' or 'graph'
         """
@@ -71,8 +73,13 @@ class GNNStack(nn.Module):
         # self.lp_fc = nn.Linear(16 * (lp_length/4) * (lp_dim/4), 128)
         self.lp_grus = nn.ModuleList()
         for l in range(lp_path_num):
-            self.lp_grus.append(nn.GRU(128, lp_length, 1, batch_first=True))
-        self.lp_fc = nn.Linear(128 * lp_path_num, 128)
+            """
+            input_size – The number of expected features in the input x
+            hidden_size – The number of features in the hidden state h
+            num_layers – Number of recurrent layers. 
+            """
+            self.lp_grus.append(nn.GRU(input_size=lp_dim, hidden_size=lp_dim, num_layers=1, batch_first=True))
+        self.lp_fc = nn.Linear(lp_dim * lp_path_num, 128)
 
         # NS: (1, ns_length, ns_dim)
         # self.ns_conv1 = nn.Conv2d(1, 6, kernel_size=5, padding=2)  # (6, ns_length, ns_dim)
@@ -80,10 +87,10 @@ class GNNStack(nn.Module):
         # self.ns_conv2 = nn.Conv2d(6, 16, kernel_size=5, padding=2)  # (16, ns_length / 2, ns_dim / 2)
         # self.ns_pool2 = nn.MaxPool2d(2, 2)
         # self.ns_fc = nn.Linear(16 * (ns_length / 4) * (ns_dim / 4), 128)
-        self.ns_gru = nn.GRU(128, ns_length, 1, batch_first=True)
+        self.ns_gru = nn.GRU(lp_dim, lp_dim, 1, batch_first=True)
 
         # 5 个 embedding 合到一起
-        self.all_fc = nn.Linear(128 * 5, 128)
+        self.all_fc = nn.Linear(lp_dim * 5, 128)
 
 
         # Graph conv
@@ -117,49 +124,58 @@ class GNNStack(nn.Module):
         # x: [2265, 3]
         # edge_index: [2, 8468]
         # batch: 2265
-        xs, edge_index, batch = data.xs, data.edge_index, data.batch
+        x, edge_index, batch = data.x, data.edge_index, data.batch
         # if data.num_node_features == 0:
         #   x = torch.ones(data.num_nodes, 1)
-        logger.info("xs.length: %d" % len(xs) )
+        # logger.info("xs.length: %d" % len(xs) )
 
-        # combine DEF, REF, PDT, LP, NS --> x
-        # x_pdt = xs['pdt']
-        # x_ref = xs['ref']
-        # x_def = xs['def']
-        # x_lp = xs['lp']
-        # x_ns = xs['ns']
-
-        x_pdt = []
-        x_ref = []
-        x_def = []
-        x_lp = []
-        x_ns = []
-        for v_batch in xs:
-            # print("vvv:", v)
-            for v in v_batch:
-                x_pdt.append(v['pdt'])
-                x_ref.append(v['ref'])
-                x_def.append(v['def'])
-                x_lp.append(v['lp'])
-                x_ns.append(v['ns'])
-        x_pdt = torch.tensor(x_pdt, dtype=torch.float)
-        x_ref = torch.tensor(x_ref, dtype=torch.float)
-        x_def = torch.tensor(x_def, dtype=torch.float)
-        x_lp = torch.tensor(x_lp, dtype=torch.float)
-        x_ns = torch.tensor(x_ns, dtype=torch.float)
+        # DEF, REF, PDT, LP, NS --> x
+        x_lp, x_ns, x_ref, x_def, x_pdt = data.x_lp, data.x_ns, data.x_ref, data.x_def, data.x_pdt
+        print("x_lp:", x_lp.shape)
+        x_lp_list = torch.zeros([LP_PATH_NUM, BATCH_SIZE, 60, 128], dtype=torch.float)
+        for i in range(LP_PATH_NUM):
+            for j in range(BATCH_SIZE):
+                x_lp_list[i][j] = x_lp[j][i]
 
         # LP
         gru_output_list = []
         for i in range(self.lp_path_num):
-            gru_output_list.append( self.lp_grus[i]( x_lp[i] ) )
-        x_lp = torch.cat(gru_output_list)
+            out, h = self.lp_grus[i]( x_lp_list[i] )
+            # print("h:", h.shape) # h: torch.Size([1, 64, 128])
+            gru_output_list.append( h )
+        # gru_output_list = torch.tensor(gru_output_list, dtype=torch.float)
+        # gru_output_list = gru_output_list.view(64, 128 * 20)
+        x_lp = torch.cat(gru_output_list).view(BATCH_SIZE, 128 * 20)
         x_lp = self.lp_fc(x_lp)
 
         # NS
-        x_ns = self.ns_gru(x_ns)
+        print("x_ns:", x_ns.shape)
+        x_ns_emb = torch.zeros([BATCH_SIZE, self.ns_length, 128], dtype=torch.float)
+        for i in range(BATCH_SIZE):
+            x_ns_emb[i] = x_ns[i]
+
+        out, h_ns = self.ns_gru(x_ns_emb)
+        print("h_ns:", h_ns.shape)
+        x_ns = h_ns.view(BATCH_SIZE, 128)
+
+        # PDT
+        x_pdt_emb = torch.zeros([BATCH_SIZE, 128], dtype=torch.float)
+        for i in range(BATCH_SIZE):
+            x_pdt_emb[i] = x_pdt[i]
+
+        # REF
+        x_ref_emb = torch.zeros([BATCH_SIZE, 128], dtype=torch.float)
+        for i in range(BATCH_SIZE):
+            x_ref_emb[i] = x_pdt[i]
+
+        # DEF
+        x_def_emb = torch.zeros([BATCH_SIZE, 128], dtype=torch.float)
+        for i in range(BATCH_SIZE):
+            x_def_emb[i] = x_pdt[i]
 
         # concatenate together
-        x = self.all_fc(torch.cat( [x_pdt, x_ref, x_def, x_lp, x_ns]))
+        x = torch.cat( [x_pdt_emb, x_ref_emb, x_def_emb, x_lp, x_ns]).view(BATCH_SIZE, 128 * 5)
+        x = self.all_fc(x)
 
         for i in range(self.num_layers):
             x = self.convs[i](x, edge_index)
@@ -252,17 +268,19 @@ def train(dataset, task, writer):
         test_loader = loader = DataLoader(dataset, batch_size=64, shuffle=True)
 
     # lp_path_num, lp_length, lp_dim, ns_length, ns_dim,
-    lp_length = dataset[0].xs[0]['lp'][0].shape[0]
-    ns_length = dataset[0].xs[0]['ns'].shape[0]
+    lp_length = dataset[0].x_lp[0][0].shape[0]
+    ns_length = dataset[0].x_ns[0].shape[0]
     logger.info("== lp_length: %d" % lp_length)
     logger.info("== ns_length: %d" % ns_length)
+    print("== lp_length: %d" % lp_length)
+    print("== ns_length: %d" % ns_length)
 
 
     # build model
     model = GNNStack(input_dim=128,
                      hidden_dim=32,
                      output_dim=2,
-                     lp_path_num = 20,
+                     lp_path_num = LP_PATH_NUM,
                      lp_length = lp_length,
                      lp_dim = 128,
                      ns_length = ns_length,
@@ -359,17 +377,25 @@ def read_my_data(save_path):
     y = []
     xs = []
 
+    x_lp = []
+    x_ns = []
+    x_def = []
+    x_ref = []
+    x_pdt = []
+
     dataset = []
     for index, row in df_all_funcs.iterrows():
         func_id = int(row['func_id'])
+        if func_id > 1000:
+            break
         if not (func_id in emb_lp_combine.keys() and func_id in emb_ns.keys()):
             continue
 
         x.append([0])
         if row['callees'].strip() != "[]":
-            logger.info("== callees != []")
+            # logger.info("== callees != []")
             callees = row['callees'].strip().replace("[", "").replace("]","").replace(" ", "" ).split(",")
-            logger.info("== len(callees):%d" % len(callees))
+            # logger.info("== len(callees):%d" % len(callees))
             for ce in callees:
                 edge_index.append([ int(row['func_id']), int(ce) ])
         if row['callers'].strip() != "[]":
@@ -377,19 +403,38 @@ def read_my_data(save_path):
             for cr in callers:
                 edge_index.append([ int(cr), int(row['func_id']) ])
 
-        xs.append({
-            'lp': emb_lp_combine[func_id],
-            'ns': emb_ns[func_id],
-            'def': df_emb_def[index],
-            'ref': df_emb_ref[index],
-            'pdt': df_emb_pdt[index]
-        })
+        # xs.append({
+        #     'lp': emb_lp_combine[func_id],
+        #     'ns': emb_ns[func_id],
+        #     'def': df_emb_def[index],
+        #     'ref': df_emb_ref[index],
+        #     'pdt': df_emb_pdt[index]
+        # })
+        # x_lp_emb = torch.zeros([LP_PATH_NUM, 60, 128], dtype=torch.float)
+        x_lp_emb = np.zeros( (LP_PATH_NUM, 60, 128), dtype=float)
+
+        for i in range(len(emb_lp_combine[func_id])):
+            if i >= LP_PATH_NUM:
+                break
+            x_lp_emb[i] = torch.tensor(emb_lp_combine[func_id][i], dtype=torch.float)
+
+        x_lp.append(x_lp_emb)
+        x_ns.append(emb_ns[func_id])
+        x_def.append(df_emb_def[index])
+        x_ref.append(df_emb_ref[index])
+        x_pdt.append(df_emb_pdt[index])
 
         if int(row['is_center']) == 1:
             # y.append(int(row['vul']))
             # edge_index = np.array(edge_index)
             # edge_index = edge_index - edge_index.min()
             x = torch.tensor(x, dtype=torch.float)
+            x_lp = torch.tensor(np.array(x_lp), dtype=torch.float)
+            x_ns = torch.tensor(x_ns, dtype=torch.float)
+            x_def = torch.tensor(x_def, dtype=torch.float)
+            x_ref = torch.tensor(x_ref, dtype=torch.float)
+            x_pdt = torch.tensor(x_pdt, dtype=torch.float)
+
             edge_index = torch.tensor(edge_index, dtype=torch.long)
             if edge_index.shape[0] > 0:
                 edge_index = edge_index - edge_index.min()
@@ -399,12 +444,18 @@ def read_my_data(save_path):
             else:
                 y = torch.tensor([0, 1], dtype=torch.long)
 
-            data = Data(x=x, edge_index=edge_index.t().contiguous(), xs=xs, y=y)
+            data = Data(x=x, edge_index=edge_index.t().contiguous(), y=y, x_pdt = x_pdt, x_ref=x_ref, x_def=x_def, x_lp = x_lp, x_ns = x_ns)
             dataset.append(data)
             x = []
             edge_index = []
             y = []
             xs = []
+            x_lp = []
+            x_ns = []
+            x_def = []
+            x_ref = []
+            x_pdt = []
+
     # loader = DataLoader(dataset, batch_size=2, shuffle=True)
     # return loader
 
