@@ -125,57 +125,47 @@ class GNNStack(nn.Module):
         # edge_index: [2, 8468]
         # batch: 2265
         x, edge_index, batch = data.x, data.edge_index, data.batch
+
         # if data.num_node_features == 0:
         #   x = torch.ones(data.num_nodes, 1)
         # logger.info("xs.length: %d" % len(xs) )
 
         # DEF, REF, PDT, LP, NS --> x
         x_lp, x_ns, x_ref, x_def, x_pdt = data.x_lp, data.x_ns, data.x_ref, data.x_def, data.x_pdt
+        print("x_ns:", x_ns.shape)
         print("x_lp:", x_lp.shape)
-        x_lp_list = torch.zeros([LP_PATH_NUM, BATCH_SIZE, 60, 128], dtype=torch.float)
+
+        # 当前 batch 总共有多少个 function。因为每个 graph 含有不同数量的 function，因此这里数值不定。
+        cur_nodes_size = x_ns.shape[0]
+
+        x_lp_list = torch.zeros([LP_PATH_NUM, x_ns.shape[0], 60, 128], dtype=torch.float)
         for i in range(LP_PATH_NUM):
-            for j in range(BATCH_SIZE):
+            for j in range(x_ns.shape[0]):
                 x_lp_list[i][j] = x_lp[j][i]
 
         # LP
         gru_output_list = []
         for i in range(self.lp_path_num):
-            out, h = self.lp_grus[i]( x_lp_list[i] )
+            out, h = self.lp_grus[i](x_lp_list[i])
             # print("h:", h.shape) # h: torch.Size([1, 64, 128])
-            gru_output_list.append( h )
+            gru_output_list.append(h)
         # gru_output_list = torch.tensor(gru_output_list, dtype=torch.float)
         # gru_output_list = gru_output_list.view(64, 128 * 20)
-        x_lp = torch.cat(gru_output_list).view(BATCH_SIZE, 128 * 20)
+        x_lp = torch.cat(gru_output_list).view(x_ns.shape[0], 128 * 20)
         x_lp = self.lp_fc(x_lp)
+        print("x_lp_after:", x_lp.shape)
 
         # NS
-        print("x_ns:", x_ns.shape)
-        x_ns_emb = torch.zeros([BATCH_SIZE, self.ns_length, 128], dtype=torch.float)
-        for i in range(BATCH_SIZE):
-            x_ns_emb[i] = x_ns[i]
-
-        out, h_ns = self.ns_gru(x_ns_emb)
+        out, h_ns = self.ns_gru(x_ns)
         print("h_ns:", h_ns.shape)
-        x_ns = h_ns.view(BATCH_SIZE, 128)
-
-        # PDT
-        x_pdt_emb = torch.zeros([BATCH_SIZE, 128], dtype=torch.float)
-        for i in range(BATCH_SIZE):
-            x_pdt_emb[i] = x_pdt[i]
-
-        # REF
-        x_ref_emb = torch.zeros([BATCH_SIZE, 128], dtype=torch.float)
-        for i in range(BATCH_SIZE):
-            x_ref_emb[i] = x_pdt[i]
-
-        # DEF
-        x_def_emb = torch.zeros([BATCH_SIZE, 128], dtype=torch.float)
-        for i in range(BATCH_SIZE):
-            x_def_emb[i] = x_pdt[i]
+        x_ns = h_ns.view(cur_nodes_size, 128)
 
         # concatenate together
-        x = torch.cat( [x_pdt_emb, x_ref_emb, x_def_emb, x_lp, x_ns]).view(BATCH_SIZE, 128 * 5)
+        x = torch.cat([x_pdt, x_ref, x_def, x_lp, x_ns]).view(cur_nodes_size, 128 * 5)
         x = self.all_fc(x)
+
+        print("x_concatenated:", x.shape)
+        print("edge_index:", edge_index.shape)
 
         for i in range(self.num_layers):
             x = self.convs[i](x, edge_index)
@@ -191,7 +181,7 @@ class GNNStack(nn.Module):
 
         x = self.post_mp(x)
 
-        return emb, F.log_softmax(x, dim=1) # dim (int): A dimension along which log_softmax will be computed.
+        return emb, F.log_softmax(x, dim=1)  # dim (int): A dimension along which log_softmax will be computed.
 
     def loss(self, pred, label):
         return F.nll_loss(pred, label)
@@ -292,6 +282,7 @@ def train(dataset, task, writer):
 
     # train
     for epoch in range(800):
+        logger.info("=== now epoch: %d" % epoch)
         total_loss = 0
         model.train()
         for batch in loader:
@@ -461,8 +452,160 @@ def read_my_data(save_path):
 
     return dataset
 
+def findAllFile(base):
+    for root, ds, fs in os.walk(base):
+        for f in fs:
+            yield f
+
+class MyLargeDataset(Dataset):
+    def __init__(self, root="", transform=None, pre_transform=None):
+        self.save_path = root
+        super(MyLargeDataset, self).__init__(root, transform, pre_transform)
+
+    @property
+    def raw_file_names(self):
+        return []
+
+    @property
+    def processed_file_names(self):
+        res = []
+        # print("self.processed_dir:", self.processed_dir)
+        for f in findAllFile(self.processed_dir):
+            # print("file: ", f)
+            if f.startswith("data_") and f.endswith(".pt"):
+                res.append(f)
+
+        print("processed_file_names:", res)
+        return res
+
+    def download(self):
+        # Download to `self.raw_dir`.
+        pass
+
+    def process(self):
+
+        all_funcs_lp_file = self.save_path + "/all_functions_with_trees_lp.csv"
+
+        emb_file_def = self.save_path + "/all_func_embedding_file_def.csv"
+        emb_file_ref = self.save_path + "/all_func_embedding_file_ref.csv"
+        emb_file_pdt = self.save_path + "/all_func_embedding_file_pdt.csv"
+
+        emb_file_lp_combine = self.save_path + "/all_func_embedding_file_lp.pkl.combine"
+        emb_file_lp_greedy = self.save_path + "/all_func_embedding_file_lp.pkl.greedy"
+
+        emb_file_ns = self.save_path + "/all_func_embedding_file_ns.pkl"
+
+        # read files
+        df_all_funcs = pd.read_csv(all_funcs_lp_file)
+
+        df_emb_def = pd.read_csv(emb_file_def).drop(columns=['type']).values
+        df_emb_ref = pd.read_csv(emb_file_ref).drop(columns=['type']).values
+        df_emb_pdt = pd.read_csv(emb_file_pdt).drop(columns=['type']).values
+
+        emb_lp_combine = pickle.load(open(emb_file_lp_combine, "rb"))
+        emb_lp_greedy = pickle.load(open(emb_file_lp_greedy, "rb"))
+
+        emb_ns = pickle.load(open(emb_file_ns, "rb"))
+
+        print("len(df_all_funcs):", len(df_all_funcs))
+
+        print("len(df_emb_def):", len(df_emb_def))
+        print("len(df_emb_ref):", len(df_emb_ref))
+        print("len(df_emb_pdt):", len(df_emb_pdt))
+
+        print("len(emb_lp_combine):", len(emb_lp_combine))
+        print("len(emb_lp_greedy):", len(emb_lp_greedy))
+        print("len(emb_ns):", len(emb_ns))
 
 
+        edge_index = []
+        x_lp = []
+        x_ns = []
+        x_def = []
+        x_ref = []
+        x_pdt = []
+
+        ii = 0
+        for index, row in df_all_funcs.iterrows():
+            func_id = int(row['func_id'])
+            if func_id > 1000:
+                break
+            if not (func_id in emb_lp_combine.keys() and func_id in emb_ns.keys()):
+                continue
+
+
+            if row['callees'].strip() != "[]":
+                # logger.info("== callees != []")
+                callees = row['callees'].strip().replace("[", "").replace("]", "").replace(" ", "").split(",")
+                # logger.info("== len(callees):%d" % len(callees))
+                for ce in callees:
+                    edge_index.append([int(row['func_id']), int(ce)])
+            if row['callers'].strip() != "[]":
+                callers = row['callers'].strip().replace("[", "").replace("]", "").replace(" ", "").split(",")
+                for cr in callers:
+                    edge_index.append([int(cr), int(row['func_id'])])
+
+            x_lp_emb = np.zeros((LP_PATH_NUM, 60, 128), dtype=float)
+
+            for i in range(len(emb_lp_combine[func_id])):
+                if i >= LP_PATH_NUM:
+                    break
+                x_lp_emb[i] = torch.tensor(emb_lp_combine[func_id][i], dtype=torch.float)
+
+            x_lp.append(x_lp_emb)
+            x_ns.append(emb_ns[func_id])
+            x_def.append(df_emb_def[index])
+            x_ref.append(df_emb_ref[index])
+            x_pdt.append(df_emb_pdt[index])
+
+            if int(row['is_center']) == 1:
+                x_lp = torch.tensor(np.array(x_lp), dtype=torch.float)
+                x_ns = torch.tensor(x_ns, dtype=torch.float)
+                x_def = torch.tensor(x_def, dtype=torch.float)
+                x_ref = torch.tensor(x_ref, dtype=torch.float)
+                x_pdt = torch.tensor(x_pdt, dtype=torch.float)
+
+                edge_index = torch.tensor(edge_index, dtype=torch.long)
+                if edge_index.shape[0] > 0:
+                    edge_index = edge_index - edge_index.min()
+
+                if int(row['vul']) == 1:
+                    y = torch.tensor([1, 0], dtype=torch.long)
+                else:
+                    y = torch.tensor([0, 1], dtype=torch.long)
+
+                data = Data(num_nodes=x_ns.shape[0],
+                            edge_index=edge_index.t().contiguous(),
+                            y=y,
+                            x_def=x_def,
+                            x_ref=x_ref,
+                            x_pdt=x_pdt,
+                            x_lp=x_lp,
+                            x_ns=x_ns,
+                            )
+
+                # if self.pre_filter is not None and not self.pre_filter(data):
+                #    continue
+
+                # if self.pre_transform is not None:
+                #    data = self.pre_transform(data)
+
+                torch.save(data, os.path.join(self.processed_dir, 'data_{}.pt'.format(ii)))
+                print("saved to:", os.path.join(self.processed_dir, 'data_{}.pt'.format(ii)))
+                ii += 1
+                edge_index = []
+                x_lp = []
+                x_ns = []
+                x_def = []
+                x_ref = []
+                x_pdt = []
+
+    def len(self):
+        return len(self.processed_file_names)
+
+    def get(self, idx):
+        data = torch.load(os.path.join(self.processed_dir, 'data_{}.pt'.format(idx)))
+        return data
 
 if __name__ == '__main__':
     # save_path = '/xye_data_nobackup/wenbo/dlvp/data/function2vec'
@@ -503,6 +646,6 @@ if __name__ == '__main__':
 
     task = 'graph'
     save_path = BASE_DIR + "/data/function2vec"
-    dataset = read_my_data(save_path)
-
+    # dataset = read_my_data(save_path)
+    dataset = MyLargeDataset(save_path)
     model = train(dataset, task, writer)
