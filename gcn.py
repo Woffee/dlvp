@@ -50,7 +50,8 @@ BATCH_SIZE = 64
 
 class GNNStack(nn.Module):
 
-    def __init__(self, input_dim, hidden_dim, output_dim, lp_path_num, lp_length, lp_dim, ns_length, ns_dim, task='node'):
+    def __init__(self, input_dim, hidden_dim, output_dim, lp_path_num, lp_length, lp_dim, ns_length, ns_dim,
+                 task='node'):
         """
         :param input_dim: max(dataset.num_node_features, 1)
         :param hidden_dim: 128
@@ -63,7 +64,6 @@ class GNNStack(nn.Module):
         self.lp_path_num = lp_path_num
         self.lp_length = lp_length
         self.ns_length = ns_length
-
 
         # LP: (lp_path_num, lp_length, lp_dim)
         # self.lp_conv1 = nn.Conv2d(lp_path_num, 6, kernel_size=5, padding=2) # (6, lp_length, lp_dim)
@@ -118,7 +118,7 @@ class GNNStack(nn.Module):
             return pyg_nn.GCNConv(input_dim, hidden_dim)
         else:
             return pyg_nn.GINConv(nn.Sequential(nn.Linear(input_dim, hidden_dim),
-                                  nn.ReLU(), nn.Linear(hidden_dim, hidden_dim)))
+                                                nn.ReLU(), nn.Linear(hidden_dim, hidden_dim)))
 
     def forward(self, data):
         # x: [2265, 3]
@@ -175,12 +175,14 @@ class GNNStack(nn.Module):
             x = F.dropout(x, p=self.dropout, training=self.training)
             if not i == self.num_layers - 1:
                 x = self.lns[i](x)
-
+        print("x after convs:", x.shape)
         if self.task == 'graph':
             x = pyg_nn.global_mean_pool(x, batch)
+        print("batch:", batch)
+        print("x after global_mean_pool:", x.shape)
 
         x = self.post_mp(x)
-
+        print("x_final.shape:", x.shape)
         return emb, F.log_softmax(x, dim=1)  # dim (int): A dimension along which log_softmax will be computed.
 
     def loss(self, pred, label):
@@ -293,6 +295,9 @@ def train(dataset, task, writer):
             if task == 'node':
                 pred = pred[batch.train_mask]
                 label = label[batch.train_mask]
+            print("pred.shape : ",pred.shape)
+            print("label.shape: ",label.shape)
+
             loss = model.loss(pred, label)
             loss.backward()
             opt.step()
@@ -457,6 +462,50 @@ def findAllFile(base):
         for f in fs:
             yield f
 
+
+def get_graph_data(df, deleted, func_id, func_index, nodes, edge_index):
+    """
+    nodes : [func_id, func_id ...]
+    edges : [ [index_of_func_id, index_of_func_id]... ]
+    func_index: func_id 在 nodes 中的 index
+    """
+    # print("get_graph_data - func_id:", func_id)
+    row = df.iloc[func_id]
+    if row['callees'].strip() != "[]":
+        callees = row['callees'].strip().replace("[", "").replace("]", "").replace(" ", "").split(",")
+        for ce in callees:
+            ce_func_id = int(ce)
+            if ce_func_id in deleted:
+                continue
+
+            if ce_func_id not in nodes:
+                nodes.append(ce_func_id)
+                ce_index = len(nodes) - 1
+            else:
+                ce_index = nodes.index(ce_func_id)
+
+            edge_index.append([func_index, ce_index])
+            nodes, edge_index = get_graph_data(df, deleted, ce_func_id, ce_index, nodes, edge_index)
+
+    if row['callers'].strip() != "[]":
+        callers = row['callers'].strip().replace("[", "").replace("]", "").replace(" ", "").split(",")
+        for cr in callers:
+            cr_func_id = int(cr)
+            if cr_func_id in deleted:
+                continue
+
+            if cr_func_id not in nodes:
+                nodes.append(cr_func_id)
+                cr_index = len(nodes) - 1
+            else:
+                cr_index = nodes.index(cr_func_id)
+
+            edge_index.append([cr_index, func_index])
+            nodes, edge_index = get_graph_data(df, deleted, int(cr), cr_index, nodes, edge_index)
+
+    return nodes, edge_index
+
+
 class MyLargeDataset(Dataset):
     def __init__(self, root="", transform=None, pre_transform=None):
         self.save_path = root
@@ -517,48 +566,57 @@ class MyLargeDataset(Dataset):
         print("len(emb_lp_greedy):", len(emb_lp_greedy))
         print("len(emb_ns):", len(emb_ns))
 
+        df = df_all_funcs
 
-        edge_index = []
-        x_lp = []
-        x_ns = []
-        x_def = []
-        x_ref = []
-        x_pdt = []
+        # 有些 function 无法生成 LP 和 NS，抛弃掉
+        deleted = []
+        for index, row in df.iterrows():
+            func_id = int(row['func_id'])
+            if not (func_id in emb_lp_combine.keys() and func_id in emb_ns.keys()):
+                deleted.append( func_id )
 
         ii = 0
-        for index, row in df_all_funcs.iterrows():
+        for index, row in df.iterrows():
             func_id = int(row['func_id'])
             if func_id > 1000:
                 break
-            if not (func_id in emb_lp_combine.keys() and func_id in emb_ns.keys()):
+            if func_id in deleted:
                 continue
 
-
-            if row['callees'].strip() != "[]":
-                # logger.info("== callees != []")
-                callees = row['callees'].strip().replace("[", "").replace("]", "").replace(" ", "").split(",")
-                # logger.info("== len(callees):%d" % len(callees))
-                for ce in callees:
-                    edge_index.append([int(row['func_id']), int(ce)])
-            if row['callers'].strip() != "[]":
-                callers = row['callers'].strip().replace("[", "").replace("]", "").replace(" ", "").split(",")
-                for cr in callers:
-                    edge_index.append([int(cr), int(row['func_id'])])
-
-            x_lp_emb = np.zeros((LP_PATH_NUM, 60, 128), dtype=float)
-
-            for i in range(len(emb_lp_combine[func_id])):
-                if i >= LP_PATH_NUM:
-                    break
-                x_lp_emb[i] = torch.tensor(emb_lp_combine[func_id][i], dtype=torch.float)
-
-            x_lp.append(x_lp_emb)
-            x_ns.append(emb_ns[func_id])
-            x_def.append(df_emb_def[index])
-            x_ref.append(df_emb_ref[index])
-            x_pdt.append(df_emb_pdt[index])
-
             if int(row['is_center']) == 1:
+                nodes = [func_id]
+                func_index = 0
+                edge_index = []
+
+                nodes, edge_index = get_graph_data(df, deleted, func_id, func_index, nodes, edge_index)
+                # print("nodes:\n", nodes)
+                # print("edge_index:\n", edge_index)
+                if len(edge_index) == 0:
+                    continue
+
+                nodes_num = len(nodes)
+                edges_num = len(edge_index)
+
+                x_lp = []
+                x_ns = []
+                x_def = []
+                x_ref = []
+                x_pdt = []
+                for f_index, f_id in enumerate(nodes):
+
+                    x_lp_emb = np.zeros((LP_PATH_NUM, 60, 128), dtype=float)
+
+                    for i in range(len(emb_lp_combine[f_id])):
+                        if i >= LP_PATH_NUM:
+                            break
+                        x_lp_emb[i] = torch.tensor(emb_lp_combine[f_id][i], dtype=torch.float)
+
+                    x_lp.append(x_lp_emb)
+                    x_ns.append(emb_ns[f_id])
+                    x_def.append(df_emb_def[index])
+                    x_ref.append(df_emb_ref[index])
+                    x_pdt.append(df_emb_pdt[index])
+
                 x_lp = torch.tensor(np.array(x_lp), dtype=torch.float)
                 x_ns = torch.tensor(x_ns, dtype=torch.float)
                 x_def = torch.tensor(x_def, dtype=torch.float)
@@ -570,9 +628,9 @@ class MyLargeDataset(Dataset):
                     edge_index = edge_index - edge_index.min()
 
                 if int(row['vul']) == 1:
-                    y = torch.tensor([1, 0], dtype=torch.long)
+                    y = 1
                 else:
-                    y = torch.tensor([0, 1], dtype=torch.long)
+                    y = 0
 
                 data = Data(num_nodes=x_ns.shape[0],
                             edge_index=edge_index.t().contiguous(),
@@ -590,15 +648,12 @@ class MyLargeDataset(Dataset):
                 # if self.pre_transform is not None:
                 #    data = self.pre_transform(data)
 
-                torch.save(data, os.path.join(self.processed_dir, 'data_{}.pt'.format(ii)))
-                print("saved to:", os.path.join(self.processed_dir, 'data_{}.pt'.format(ii)))
+                to_file = os.path.join(self.processed_dir, 'data_{}.pt'.format(ii))
+                torch.save(data, to_file)
+                print("saved to: %s, nodes_num: %d, edges_num: %d" % (to_file, nodes_num, edges_num))
+                logger.info("saved to: %s, nodes_num: %d, edges_num: %d" % (to_file, nodes_num, edges_num))
                 ii += 1
-                edge_index = []
-                x_lp = []
-                x_ns = []
-                x_def = []
-                x_ref = []
-                x_pdt = []
+
 
     def len(self):
         return len(self.processed_file_names)
@@ -649,3 +704,4 @@ if __name__ == '__main__':
     # dataset = read_my_data(save_path)
     dataset = MyLargeDataset(save_path)
     model = train(dataset, task, writer)
+    logger.info("training GCN done.")
