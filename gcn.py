@@ -52,13 +52,13 @@ logger.info("=== using device: %s" % str(device))
 
 #Additional Info when using cuda
 if device.type == 'cuda':
-    print(torch.cuda.get_device_name(0))
-    print('# Memory Usage:')
-    print('# Allocated:', round(torch.cuda.memory_allocated(0)/1024**3,1), 'GB')
-    print('# Cached:   ', round(torch.cuda.memory_reserved(0)/1024**3,1), 'GB')
+    print('#', torch.cuda.get_device_name(0))
+    # print('# Memory Usage:')
+    # print('# Allocated:', round(torch.cuda.memory_allocated(0)/1024**3,1), 'GB')
+    # print('# Cached:   ', round(torch.cuda.memory_reserved(0)/1024**3,1), 'GB')
 
 LP_PATH_NUM = 20
-BATCH_SIZE = 64
+BATCH_SIZE = 1
 
 class GNNStack(nn.Module):
 
@@ -304,7 +304,7 @@ def train(dataset, task, writer):
         model.train()
         for batch in loader:
             # print(batch.train_mask, '----')
-            opt.zero_grad()
+            opt.zero_grad() # 清空梯度
             embedding, pred = model(batch)
             label = batch.y.to(device)
             if task == 'node':
@@ -314,9 +314,14 @@ def train(dataset, task, writer):
             # print("label.shape: ",label.shape)
 
             loss = model.loss(pred, label)
-            loss.backward()
-            opt.step()
+            loss.backward() # 反向计算梯度，累加到之前梯度上
+            opt.step() # 更新参数
             total_loss += loss.item() * batch.num_graphs
+
+            # delete caches
+            del batch, embedding, pred, loss
+            torch.cuda.empty_cache()
+
         total_loss /= len(loader.dataset)
         writer.add_scalar("loss", total_loss, epoch)
 
