@@ -45,6 +45,18 @@ logging.basicConfig(level=logging.INFO,
                     filename=BASE_DIR + '/logs/' + now_time + '.log')
 logger = logging.getLogger(__name__)
 
+# setting device on GPU if available, else CPU
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+print('# Using device:', device)
+logger.info("=== using device: %s" % str(device))
+
+#Additional Info when using cuda
+if device.type == 'cuda':
+    print(torch.cuda.get_device_name(0))
+    print('# Memory Usage:')
+    print('# Allocated:', round(torch.cuda.memory_allocated(0)/1024**3,1), 'GB')
+    print('# Cached:   ', round(torch.cuda.memory_reserved(0)/1024**3,1), 'GB')
+
 LP_PATH_NUM = 20
 BATCH_SIZE = 64
 
@@ -99,6 +111,7 @@ class GNNStack(nn.Module):
 
         self.dropout = 0.25
         self.num_layers = 3 # len of self.convs
+        self.loss_layer = nn.CrossEntropyLoss()
 
     def build_conv_model(self, input_dim, hidden_dim):
         # refer to pytorch geometric nn module for different implementation of GNNs.
@@ -109,10 +122,14 @@ class GNNStack(nn.Module):
                                                 nn.ReLU(), nn.Linear(hidden_dim, hidden_dim)))
 
     def forward(self, data):
+        data.to(device)
         # x: [2265, 3]
         # edge_index: [2, 8468]
         # batch: 2265
         x, edge_index, batch = data.x, data.edge_index, data.batch
+
+        edge_index.to(device)
+        batch.to(device)
 
         # if data.num_node_features == 0:
         #   x = torch.ones(data.num_nodes, 1)
@@ -120,13 +137,20 @@ class GNNStack(nn.Module):
 
         # DEF, REF, PDT, LP, NS --> x
         x_lp, x_ns, x_ref, x_def, x_pdt = data.x_lp, data.x_ns, data.x_ref, data.x_def, data.x_pdt
+
+        x_lp.to(device)
+        x_ns.to(device)
+        x_ref.to(device)
+        x_def.to(device)
+        x_pdt.to(device)
+
         # print("x_ns:", x_ns.shape)
         # print("x_lp:", x_lp.shape)
 
         # 当前 batch 总共有多少个 function。因为每个 graph 含有不同数量的 function，因此这里数值不定。
         cur_nodes_size = x_ns.shape[0]
 
-        x_lp_list = torch.zeros([LP_PATH_NUM, x_ns.shape[0], 60, 128], dtype=torch.float)
+        x_lp_list = torch.zeros([LP_PATH_NUM, x_ns.shape[0], 60, 128], dtype=torch.float).to(device)
         for i in range(LP_PATH_NUM):
             for j in range(x_ns.shape[0]):
                 x_lp_list[i][j] = x_lp[j][i]
@@ -139,7 +163,7 @@ class GNNStack(nn.Module):
             gru_output_list.append(h)
         # gru_output_list = torch.tensor(gru_output_list, dtype=torch.float)
         # gru_output_list = gru_output_list.view(64, 128 * 20)
-        x_lp = torch.cat(gru_output_list).view(x_ns.shape[0], 128 * 20)
+        x_lp = torch.cat(gru_output_list).view(x_ns.shape[0], 128 * 20).to(device)
         x_lp = self.lp_fc(x_lp)
         # print("x_lp_after:", x_lp.shape)
 
@@ -149,7 +173,7 @@ class GNNStack(nn.Module):
         x_ns = h_ns.view(cur_nodes_size, 128)
 
         # concatenate together
-        x = torch.cat([x_pdt, x_ref, x_def, x_lp, x_ns]).view(cur_nodes_size, 128 * 5)
+        x = torch.cat([x_pdt, x_ref, x_def, x_lp, x_ns]).view(cur_nodes_size, 128 * 5).to(device)
         x = self.all_fc(x)
 
         # print("x_concatenated:", x.shape)
@@ -174,7 +198,9 @@ class GNNStack(nn.Module):
         return emb, F.log_softmax(x, dim=1)  # dim (int): A dimension along which log_softmax will be computed.
 
     def loss(self, pred, label):
-        return F.nll_loss(pred, label)
+        # CrossEntropyLoss torch.nn.CrossEntropyLoss
+        # return F.nll_loss(pred, label)
+        return self.loss_layer(pred, label)
 
 class CustomConv(pyg_nn.MessagePassing):
     def __init__(self, in_channels, out_channels):
@@ -266,6 +292,7 @@ def train(dataset, task, writer):
                      ns_length = ns_length,
                      ns_dim=128,
                      task=task)
+    model.to(device)
     print("len(model.convs):", len(model.convs))
 
     opt = optim.Adam(model.parameters(), lr=0.01)
@@ -279,7 +306,7 @@ def train(dataset, task, writer):
             # print(batch.train_mask, '----')
             opt.zero_grad()
             embedding, pred = model(batch)
-            label = batch.y
+            label = batch.y.to(device)
             if task == 'node':
                 pred = pred[batch.train_mask]
                 label = label[batch.train_mask]
@@ -370,7 +397,7 @@ class MyLargeDataset(Dataset):
             if f.startswith("data_") and f.endswith(".pt"):
                 res.append(f)
 
-        print("processed_file_names:", res)
+        print("processed_files_num:", len(res))
         return res
 
     def download(self):
@@ -420,12 +447,13 @@ class MyLargeDataset(Dataset):
             func_id = int(row['func_id'])
             if not (func_id in emb_lp_combine.keys() and func_id in emb_ns.keys()):
                 deleted.append( func_id )
+        logger.info("=== no lp or ns functions: %d" % len(deleted))
 
         ii = 0
         for index, row in df.iterrows():
             func_id = int(row['func_id'])
-            if func_id > 1000:
-                break
+            # if func_id > 1000:
+            #     break
             if func_id in deleted:
                 continue
 
