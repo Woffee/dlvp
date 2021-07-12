@@ -123,17 +123,11 @@ class GNNStack(nn.Module):
 
     def forward(self, data):
         data.to(device)
-        # x: [2265, 3]
-        # edge_index: [2, 8468]
-        # batch: 2265
+
         x, edge_index, batch = data.x, data.edge_index, data.batch
 
         edge_index.to(device)
         batch.to(device)
-
-        # if data.num_node_features == 0:
-        #   x = torch.ones(data.num_nodes, 1)
-        # logger.info("xs.length: %d" % len(xs) )
 
         # DEF, REF, PDT, LP, NS --> x
         x_lp, x_ns, x_ref, x_def, x_pdt = data.x_lp, data.x_ns, data.x_ref, data.x_def, data.x_pdt
@@ -148,7 +142,7 @@ class GNNStack(nn.Module):
         # print("x_lp:", x_lp.shape)
 
         # 当前 batch 总共有多少个 function。因为每个 graph 含有不同数量的 function，因此这里数值不定。
-        cur_nodes_size = x_ns.shape[0]
+        # cur_nodes_size = x_ns.shape[0]
 
         x_lp_list = torch.zeros([LP_PATH_NUM, x_ns.shape[0], 60, 128], dtype=torch.float).to(device)
         for i in range(LP_PATH_NUM):
@@ -161,19 +155,24 @@ class GNNStack(nn.Module):
             out, h = self.lp_grus[i](x_lp_list[i])
             # print("h:", h.shape) # h: torch.Size([1, 64, 128])
             gru_output_list.append(h)
-        # gru_output_list = torch.tensor(gru_output_list, dtype=torch.float)
-        # gru_output_list = gru_output_list.view(64, 128 * 20)
-        x_lp = torch.cat(gru_output_list).view(x_ns.shape[0], 128 * 20).to(device)
+
+        del x_lp_list
+        x_lp = torch.cat(gru_output_list).view(x_ns.shape[0], 128 * LP_PATH_NUM).to(device)
+        del gru_output_list
         x_lp = self.lp_fc(x_lp)
+
         # print("x_lp_after:", x_lp.shape)
 
         # NS
         out, h_ns = self.ns_gru(x_ns)
+        del out
         # print("h_ns:", h_ns.shape)
-        x_ns = h_ns.view(cur_nodes_size, 128)
+        x_ns = h_ns.view(x_ns.shape[0], 128)
+        del h_ns
 
         # concatenate together
-        x = torch.cat([x_pdt, x_ref, x_def, x_lp, x_ns]).view(cur_nodes_size, 128 * 5).to(device)
+        x = torch.cat([x_pdt, x_ref, x_def, x_lp, x_ns]).view(x_ns.shape[0], 128 * 5).to(device)
+        del x_lp, x_ns, x_ref, x_def, x_pdt
         x = self.all_fc(x)
 
         # print("x_concatenated:", x.shape)
@@ -183,7 +182,7 @@ class GNNStack(nn.Module):
             x = self.convs[i](x, edge_index)
             emb = x
             # emb: [2265, 32]
-            x = F.relu(x)
+            x = F.relu(x, inplace=True)
             x = F.dropout(x, p=self.dropout, training=self.training)
             if not i == self.num_layers - 1:
                 x = self.lns[i](x)
@@ -314,13 +313,24 @@ def train(dataset, task, writer):
             # print("label.shape: ",label.shape)
 
             loss = model.loss(pred, label)
+
+            logger.info("# Allocated loss: %.3f GB" % round(torch.cuda.memory_allocated(0) / 1024 ** 3, 1))
+            logger.info("# Cached    loss: %.3f GB" % round(torch.cuda.memory_reserved(0) / 1024 ** 3, 1))
+
             loss.backward() # 反向计算梯度，累加到之前梯度上
             opt.step() # 更新参数
             total_loss += loss.item() * batch.num_graphs
 
+            logger.info("# Allocated backward: %.3f GB" % round(torch.cuda.memory_allocated(0)/1024**3,1))
+            logger.info("# Cached    backward: %.3f GB" % round(torch.cuda.memory_reserved(0)/1024**3,1))
+
             # delete caches
-            del batch, embedding, pred, loss
+            del embedding, pred, loss
             torch.cuda.empty_cache()
+
+            logger.info("# Allocated empty_cache: %.3f GB" % round(torch.cuda.memory_allocated(0) / 1024 ** 3, 1))
+            logger.info("# Cached    empty_cache: %.3f GB" % round(torch.cuda.memory_reserved(0) / 1024 ** 3, 1))
+
 
         total_loss /= len(loader.dataset)
         writer.add_scalar("loss", total_loss, epoch)
@@ -476,31 +486,37 @@ class MyLargeDataset(Dataset):
                 nodes_num = len(nodes)
                 edges_num = len(edge_index)
 
-                x_lp = []
-                x_ns = []
-                x_def = []
-                x_ref = []
-                x_pdt = []
+                x_lp = torch.zeros([len(nodes), LP_PATH_NUM, 60, 128], dtype=torch.float)
+
+                # for i in range(LP_PATH_NUM):
+                #     # x_lp.append( np.zeros((len(nodes), 60, 128), dtype=float) )
+                #     x_lp.append( torch.zeros([len(nodes), 60, 128], dtype=torch.float))
+
+                x_ns = torch.zeros([len(nodes), 2000, 128], dtype=torch.float)
+                x_def = torch.zeros([len(nodes), 128], dtype=torch.float)
+                x_ref = torch.zeros([len(nodes), 128], dtype=torch.float)
+                x_pdt = torch.zeros([len(nodes), 128], dtype=torch.float)
                 for f_index, f_id in enumerate(nodes):
 
-                    x_lp_emb = np.zeros((LP_PATH_NUM, 60, 128), dtype=float)
+                    # x_lp_emb = np.zeros((LP_PATH_NUM, 60, 128), dtype=float)
 
                     for i in range(len(emb_lp_combine[f_id])):
                         if i >= LP_PATH_NUM:
                             break
-                        x_lp_emb[i] = torch.tensor(emb_lp_combine[f_id][i], dtype=torch.float)
+                        # x_lp_emb[i] = torch.tensor(emb_lp_combine[f_id][i], dtype=torch.float)
+                        x_lp[f_index][i] =  torch.tensor(emb_lp_combine[f_id][i], dtype=torch.float)
 
-                    x_lp.append(x_lp_emb)
-                    x_ns.append(emb_ns[f_id])
-                    x_def.append(df_emb_def[index])
-                    x_ref.append(df_emb_ref[index])
-                    x_pdt.append(df_emb_pdt[index])
+                    # x_lp.append(x_lp_emb)
+                    x_ns[f_index]  = torch.tensor(emb_ns[f_id], dtype=torch.float)
+                    x_def[f_index] = torch.tensor(df_emb_def[f_id], dtype=torch.float)
+                    x_ref[f_index] = torch.tensor(df_emb_ref[f_id], dtype=torch.float)
+                    x_pdt[f_index] = torch.tensor(df_emb_pdt[f_id], dtype=torch.float)
 
-                x_lp = torch.tensor(np.array(x_lp), dtype=torch.float)
-                x_ns = torch.tensor(x_ns, dtype=torch.float)
-                x_def = torch.tensor(x_def, dtype=torch.float)
-                x_ref = torch.tensor(x_ref, dtype=torch.float)
-                x_pdt = torch.tensor(x_pdt, dtype=torch.float)
+                # x_lp = torch.tensor(np.array(x_lp), dtype=torch.float)
+                # x_ns = torch.tensor(x_ns, dtype=torch.float)
+                # x_def = torch.tensor(x_def, dtype=torch.float)
+                # x_ref = torch.tensor(x_ref, dtype=torch.float)
+                # x_pdt = torch.tensor(x_pdt, dtype=torch.float)
 
                 edge_index = torch.tensor(edge_index, dtype=torch.long)
                 if edge_index.shape[0] > 0:
