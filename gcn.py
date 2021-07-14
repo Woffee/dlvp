@@ -25,6 +25,7 @@ from sklearn.manifold import TSNE
 import matplotlib.pyplot as plt
 import pandas as pd
 import os
+from gpu_mem_track import MemTracker
 
 import logging
 
@@ -58,7 +59,7 @@ if device.type == 'cuda':
     # print('# Cached:   ', round(torch.cuda.memory_reserved(0)/1024**3,1), 'GB')
 
 LP_PATH_NUM = 20
-BATCH_SIZE = 1
+BATCH_SIZE = 16
 
 class GNNStack(nn.Module):
 
@@ -77,14 +78,14 @@ class GNNStack(nn.Module):
         self.lp_length = lp_length
         self.ns_length = ns_length
 
-        self.lp_grus = nn.ModuleList()
-        for l in range(lp_path_num):
-            """
-            input_size – The number of expected features in the input x
-            hidden_size – The number of features in the hidden state h
-            num_layers – Number of recurrent layers. 
-            """
-            self.lp_grus.append(nn.GRU(input_size=lp_dim, hidden_size=lp_dim, num_layers=1, batch_first=True))
+        self.lp_gru = nn.GRU(input_size=lp_dim, hidden_size=lp_dim, num_layers=1, batch_first=True)
+        # for l in range(lp_path_num):
+        #     """
+        #     input_size – The number of expected features in the input x
+        #     hidden_size – The number of features in the hidden state h
+        #     num_layers – Number of recurrent layers.
+        #     """
+        #     self.lp_grus.append(nn.GRU(input_size=lp_dim, hidden_size=lp_dim, num_layers=1, batch_first=True))
         self.lp_fc = nn.Linear(lp_dim * lp_path_num, 128)
 
         self.ns_gru = nn.GRU(lp_dim, lp_dim, 1, batch_first=True)
@@ -138,7 +139,8 @@ class GNNStack(nn.Module):
         x_def.to(device)
         x_pdt.to(device)
 
-        # print("x_ns:", x_ns.shape)
+        # print("forward x_ns:", x_ns.shape)
+        # logger.info("forward x_ns: [%d, %d, %d]" % (x_ns.shape[0], x_ns.shape[1], x_ns.shape[2]) )
         # print("x_lp:", x_lp.shape)
 
         # 当前 batch 总共有多少个 function。因为每个 graph 含有不同数量的 function，因此这里数值不定。
@@ -152,7 +154,7 @@ class GNNStack(nn.Module):
         # LP
         gru_output_list = []
         for i in range(self.lp_path_num):
-            out, h = self.lp_grus[i](x_lp_list[i])
+            out, h = self.lp_gru(x_lp_list[i])
             # print("h:", h.shape) # h: torch.Size([1, 64, 128])
             gru_output_list.append(h)
 
@@ -267,10 +269,10 @@ def train(dataset, task, writer):
     if task == 'graph':
         data_size = len(dataset)
         print("data_size:", data_size)
-        loader = DataLoader(dataset[:int(data_size * 0.8)], batch_size=64, shuffle=True)
-        test_loader = DataLoader(dataset[int(data_size * 0.8):], batch_size=64, shuffle=True)
+        loader = DataLoader(dataset[:int(data_size * 0.8)], batch_size=BATCH_SIZE, shuffle=True)
+        test_loader = DataLoader(dataset[int(data_size * 0.8):], batch_size=BATCH_SIZE, shuffle=True)
     else:
-        test_loader = loader = DataLoader(dataset, batch_size=64, shuffle=True)
+        test_loader = loader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=True)
 
     # lp_path_num, lp_length, lp_dim, ns_length, ns_dim,
     lp_length = dataset[0].x_lp[0][0].shape[0]
@@ -291,7 +293,14 @@ def train(dataset, task, writer):
                      ns_length = ns_length,
                      ns_dim=128,
                      task=task)
+
+    # gpu_tracker = MemTracker()  # define a GPU tracker
+    # gpu_tracker.track()
+
     model.to(device)
+
+    # gpu_tracker.track()
+
     print("len(model.convs):", len(model.convs))
 
     opt = optim.Adam(model.parameters(), lr=0.01)
@@ -314,22 +323,28 @@ def train(dataset, task, writer):
 
             loss = model.loss(pred, label)
 
-            logger.info("# Allocated loss: %.3f GB" % round(torch.cuda.memory_allocated(0) / 1024 ** 3, 1))
-            logger.info("# Cached    loss: %.3f GB" % round(torch.cuda.memory_reserved(0) / 1024 ** 3, 1))
+            # gpu_tracker.track()
+
+            # logger.info("# Allocated loss: %.3f GB" % round(torch.cuda.memory_allocated(0) / 1024 ** 3, 1))
+            # logger.info("# Cached    loss: %.3f GB" % round(torch.cuda.memory_reserved(0) / 1024 ** 3, 1))
 
             loss.backward() # 反向计算梯度，累加到之前梯度上
             opt.step() # 更新参数
             total_loss += loss.item() * batch.num_graphs
 
-            logger.info("# Allocated backward: %.3f GB" % round(torch.cuda.memory_allocated(0)/1024**3,1))
-            logger.info("# Cached    backward: %.3f GB" % round(torch.cuda.memory_reserved(0)/1024**3,1))
+            # gpu_tracker.track()
+
+            # logger.info("# Allocated backward: %.3f GB" % round(torch.cuda.memory_allocated(0)/1024**3,1))
+            # logger.info("# Cached    backward: %.3f GB" % round(torch.cuda.memory_reserved(0)/1024**3,1))
 
             # delete caches
             del embedding, pred, loss
             torch.cuda.empty_cache()
 
-            logger.info("# Allocated empty_cache: %.3f GB" % round(torch.cuda.memory_allocated(0) / 1024 ** 3, 1))
-            logger.info("# Cached    empty_cache: %.3f GB" % round(torch.cuda.memory_reserved(0) / 1024 ** 3, 1))
+            # gpu_tracker.track()
+
+            # logger.info("# Allocated empty_cache: %.3f GB" % round(torch.cuda.memory_allocated(0) / 1024 ** 3, 1))
+            # logger.info("# Cached    empty_cache: %.3f GB" % round(torch.cuda.memory_reserved(0) / 1024 ** 3, 1))
 
 
         total_loss /= len(loader.dataset)
@@ -511,6 +526,9 @@ class MyLargeDataset(Dataset):
                     x_def[f_index] = torch.tensor(df_emb_def[f_id], dtype=torch.float)
                     x_ref[f_index] = torch.tensor(df_emb_ref[f_id], dtype=torch.float)
                     x_pdt[f_index] = torch.tensor(df_emb_pdt[f_id], dtype=torch.float)
+
+                # print("x_ns.shape:",x_ns.shape)
+                # logger.info("x_ns.shape: [%d, %d]" % (x_ns.shape[0], x_ns.shape[1]))
 
                 # x_lp = torch.tensor(np.array(x_lp), dtype=torch.float)
                 # x_ns = torch.tensor(x_ns, dtype=torch.float)
