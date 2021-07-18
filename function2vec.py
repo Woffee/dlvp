@@ -63,7 +63,8 @@ def find_functions(functions, cve_id, commit_id, vul, lv=0):
             'func_name': func['func_name'],
             'file_name': func['file_name'],
             'file_loc': func['file_loc'],
-            'vul': 1 if vul==1 and lv==0 else 0,
+            'level': lv,
+            'vul': vul,
             'code': func['code'],
             'is_center': 1 if lv==0 else 0,
             'callees': [],
@@ -84,11 +85,29 @@ def find_functions(functions, cve_id, commit_id, vul, lv=0):
                 item['callers'].append(sub_f['func_id'])
     return res
 
+def get_commits_prev():
+    commits_prev = {}
+    log_file = "commits_parrent.log"
+    with open(log_file, "r") as f:
+        for line in f.readlines():
+            l = line.strip()
+            if l == "":
+                continue
+
+            if l.find("===") > -1:
+                l = l.replace("===", "").replace(" ", "")
+                cur, prev = l.split(",")
+                # print(cur, prev)
+                if cur not in commits_prev.keys():
+                    commits_prev[cur] = prev
+    return commits_prev
 
 # 这里统计的规则是：只要有 function body，无论有无 caller、callee 都行。
 def read_cve_jsons(folder_path):
     functions = []
-
+    commits_prev = get_commits_prev()
+    logger.info("len(commits_prev): %d" % len(commits_prev))
+    found_prev = 0
     for filename in findAllFile(folder_path):
         if filename.endswith(".json"):
             print(filename)
@@ -102,10 +121,16 @@ def read_cve_jsons(folder_path):
             cve_id = obj['cve_id']
             for commit in obj['functions']:
                 commit_id = commit['commit_id']
-                funcs_before = find_functions(commit['functions_before'], cve_id, commit_id, 1)
+                if commit_id in commits_prev.keys():
+                    c_prev = commits_prev[commit_id]
+                    found_prev += 1
+                else:
+                    c_prev = commit_id + "^1"
+                funcs_before = find_functions(commit['functions_before'], cve_id, c_prev, 1)
                 funcs_after = find_functions(commit['functions_after'], cve_id, commit_id, 0)
                 functions = functions + funcs_before + funcs_after
             # break
+    logger.info("found_prev: %d" % found_prev)
     return functions
 
 def generate_prolog(code):
@@ -165,24 +190,32 @@ if __name__ == '__main__':
 
     if not os.path.exists(all_func_trees_file):
         # read cve jsons data
-        data = read_cve_jsons(args.cve_jsons_path)
-        df_functions = pd.DataFrame(data)
-        logger.info("len(df_functions): %d" % len(df_functions))
         if not os.path.exists(args.all_functions_file):
+            data = read_cve_jsons(args.cve_jsons_path)
+            df_functions = pd.DataFrame(data)
             df_functions.to_csv(args.all_functions_file, sep=',', index=None)
             print("saved to: ", args.all_functions_file)
             logger.info("saved to: %s" % args.all_functions_file)
+        else:
+            df_functions = pd.read_csv(args.all_functions_file)
+
+        logger.info("len(df_functions): %d" % len(df_functions))
 
         # get trees from code using Joern
         existed = get_existed_trees_func_id(all_func_trees_json_file)
         cc = 0
-        for i,item in enumerate(data):
-            if item['func_id'] in existed:
+
+        df_functions['trees'] = ''
+        d_index = list(df_functions.columns).index('trees')
+        print("d_index:", d_index)
+
+        for index, row in df_functions.iterrows():
+            if row['func_id'] in existed:
                 continue
-            data[i]['trees'] = generate_prolog(item['code'])
+            df_functions.iloc[index, d_index] = generate_prolog(row['code'])
             # save trees in a json file
             with open(all_func_trees_json_file, "a") as fw:
-                fw.write(json.dumps(data[i]) + "\n")
+                fw.write(row.to_json() + "\n")
                 logger.info("saved to: %s" % all_func_trees_json_file )
 
             if cc % 1000 == 0:
@@ -191,7 +224,7 @@ if __name__ == '__main__':
                 x = p.read()
             cc += 1
         # save trees in a csv file
-        df_functions = pd.DataFrame(data)
+        # df_functions = pd.DataFrame(data)
         df_functions.to_csv(all_func_trees_file, sep=',', index=None)
         print("saved to:", all_func_trees_file)
         logger.info("saved to: %s" % all_func_trees_file)
