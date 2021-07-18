@@ -30,13 +30,32 @@ folders = ['data/', 'logs/', 'projects/', 'data/function2vec2', "data/preprocess
 for f in folders:
     Path(f).mkdir(parents=True, exist_ok=True)
 
+# args
+parser = argparse.ArgumentParser(description='Test for argparse')
+parser.add_argument('--cur_p', help='the No. of current progress', type=int, default=0)
+parser.add_argument('--tasks_file', help='tasks_file', type=str, default='data/function2vec2/tasks.json')
+parser.add_argument('--functions_path', help='functions_path', type=str, default='data/function2vec2/functions_jy')
+
+# PDT, DEF, REF
+# 先每个 function 对应一个 json object，追加保存到到 all_func_trees_json_file，再合并到 all_func_trees_file。
+parser.add_argument('--all_func_trees_json_file', help='all_func_trees_json_file', type=str,
+                    default= SAVE_PATH + '/all_functions_with_trees.json')
+parser.add_argument('--all_func_trees_file', help='all_func_trees_file', type=str,
+                    default= SAVE_PATH + '/all_functions_with_trees.csv')
+# LP, NS
+parser.add_argument('--all_func_embedding_file', help='all_func_embedding_file', type=str, default= SAVE_PATH + '/all_func_embedding_ref.csv')
+args = parser.parse_args()
+
+
+
 # log file
 now_time = time.strftime("%Y-%m-%d_%H-%M", time.localtime())
 logging.basicConfig(level=logging.INFO,
                     format='%(asctime)s %(levelname)s %(filename)s line: %(lineno)s - %(message)s',
                     datefmt='%Y-%m-%d %H:%M:%S',
-                    filename=BASE_DIR + '/logs/' + now_time + '.log')
+                    filename=BASE_DIR + '/logs/' + now_time + "_p%d.log" % int(args.cur_p))
 logger = logging.getLogger(__name__)
+logger.info("function2vec parameters %s", args)
 
 def findAllFile(base):
     for root, ds, fs in os.walk(base):
@@ -118,79 +137,88 @@ def get_existed_trees_func_id(filename):
 
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description='Test for argparse')
-    parser.add_argument('--cur_p', help='the No. of current progress', type=int, default=0)
-    parser.add_argument('--tasks_file', help='tasks_file', type=str, default='data/function2vec2/tasks.json')
-    parser.add_argument('--functions_path', help='functions_path', type=str, default='data/function2vec2/functions_jy')
-
-
-    # PDT, DEF, REF
-    # 先每个 function 对应一个 json object，追加保存到到 all_func_trees_json_file，再合并到 all_func_trees_file。
-
-    parser.add_argument('--all_func_trees_json_file', help='all_func_trees_json_file', type=str,
-                        default= SAVE_PATH + '/all_functions_with_trees.json')
-    parser.add_argument('--all_func_trees_file', help='all_func_trees_file', type=str,
-                        default= SAVE_PATH + '/all_functions_with_trees.csv')
-
-
-    # LP, NS
-    parser.add_argument('--all_func_embedding_file', help='all_func_embedding_file', type=str, default= SAVE_PATH + '/all_func_embedding_ref.csv')
-
-    args = parser.parse_args()
-    logger.info("function2vec parameters %s", args)
-
     tasks_file = args.tasks_file
     functions_path = args.functions_path
-
     all_func_trees_json_file = args.all_func_trees_json_file
     all_func_trees_file = args.all_func_trees_file
+    cur_p = int(args.cur_p)
+
+    SUB_SAVEPATH = BASE_DIR + "/data/function2vec2_%d" % cur_p
+    Path(SUB_SAVEPATH).mkdir(parents=True, exist_ok=True)
 
     if not os.path.exists(all_func_trees_file):
-        # get trees from code using Joern
-        existed = get_existed_trees_func_id(all_func_trees_json_file)
-        cc = 0
+        if cur_p < 9: # 用 9 来代替是否合并处理好的数据
+            # get trees from code using Joern
+            all_func_trees_json_file_p = SUB_SAVEPATH + '/all_functions_with_trees.json'
+            existed = get_existed_trees_func_id(all_func_trees_json_file_p)
+            cc = 0
 
-        with open(tasks_file, 'r') as taskFile:
-            taskDesc = json.load(taskFile)
+            with open(tasks_file, 'r') as taskFile:
+                taskDesc = json.load(taskFile)
 
-            for repoName in taskDesc:
-                if repoName == 'linux':
-                    continue
-                logger.info("now project: %s" % repoName)
-                project_path = os.path.join(functions_path, repoName)
+                # 数据比较耗时间，分成 4 个来同时跑，每个跑 60 个 projects
+                batch_p = 60
+                finished_repos = ['accountsservice','ghostpdl','aircrack-ng','atheme','axtls-8266','barebox','beanstalkd','bfgminer','bitlbee','bubblewrap','busybox','bzrtp','capstone','cherokee','cJSON','collectd','htcondor','conntrack-tools','corosync']
+                all_repo_names = list(taskDesc.keys())
+                all_repo_names = list(set(all_repo_names) - set(finished_repos))
 
-                for cve_id, non_vul_commits in taskDesc[repoName]['vuln'].items():
-                    logger.info("now cve_id: %s" % cve_id)
-
-                    entities_file = "%s/%s-entities.json" % (project_path, cve_id)
-                    cve_functions = read_functions(repoName, entities_file, non_vul_commits)
-
-                    for func in cve_functions:
-                        if func['func_key'] not in existed:
-                            func['tree'] = generate_prolog(func['contents'])
-
-                            with open(all_func_trees_json_file, "a") as fw:
-                                fw.write(json.dumps(func) + "\n")
-                                logger.info("saved: %s" % func['func_key'])
-                            cc += 1
-                            if cc % 1000 == 0:
-                                cmd = "rm /tmp/joern-default*"
-                                p = os.popen(cmd)
-                                x = p.read()
-
-        # save jsons (with trees) to a csv file
-        all_funcs = []
-        with open(all_func_trees_json_file, "r") as f:
-            for line in f.readlines():
-                if line.strip() == "":
-                    continue
-                all_funcs.append(json.loads(line))
+                cur_batch = all_repo_names[batch_p * cur_p: batch_p * (cur_p + 1)]
+                print("now cur_p: %d" % cur_p)
+                print("now len of cur_batch: %d" % len(cur_batch))
+                logger.info("now cur_p: %d" % cur_p)
+                logger.info("now len of cur_batch: %d" % len(cur_batch))
 
 
-        df_functions = pd.DataFrame(all_funcs)
-        df_functions.to_csv(all_func_trees_file, sep=',', index=None)
-        print("saved to:", all_func_trees_file)
-        logger.info("saved to: %s" % all_func_trees_file)
+                for repoName in cur_batch:
+                    if repoName == 'linux':
+                        continue
+                    logger.info("now project: %s" % repoName)
+                    project_path = os.path.join(functions_path, repoName)
+
+                    for cve_id, non_vul_commits in taskDesc[repoName]['vuln'].items():
+                        logger.info("now cve_id: %s" % cve_id)
+
+                        entities_file = "%s/%s-entities.json" % (project_path, cve_id)
+                        cve_functions = read_functions(repoName, entities_file, non_vul_commits)
+
+                        for func in cve_functions:
+                            if func['func_key'] not in existed:
+                                func['tree'] = generate_prolog(func['contents'])
+
+                                with open(all_func_trees_json_file_p, "a") as fw:
+                                    fw.write(json.dumps(func) + "\n")
+                                    logger.info("saved: %s" % func['func_key'])
+                                cc += 1
+                                if cc % 1000 == 0:
+                                    cmd = "rm /tmp/joern-default*"
+                                    p = os.popen(cmd)
+                                    x = p.read()
+            logger.info("sub progress %d done" % cur_p)
+            exit()
+        else:
+            # save jsons (with trees) to a csv file
+            all_funcs = []
+            all_funcs_keys = []
+            with open(all_func_trees_json_file, "r") as f:
+                for line in f.readlines():
+                    if line.strip() == "":
+                        continue
+                    all_funcs.append(json.loads(line))
+            for pp in range(4):
+                all_func_trees_json_file_p = BASE_DIR + "/data/function2vec2_%d/all_functions_with_trees.json" % pp
+                with open(all_func_trees_json_file_p, "r") as f:
+                    for line in f.readlines():
+                        if line.strip() == "":
+                            continue
+                        func = json.loads(line)
+                        if func['func_key'] not in all_funcs_keys:
+                            all_funcs.append(func)
+                            all_funcs_keys.append(func['func_key'])
+
+            df_functions = pd.DataFrame(all_funcs)
+            df_functions.to_csv(all_func_trees_file, sep=',', index=None)
+            print("saved to:", all_func_trees_file)
+            logger.info("saved to: %s" % all_func_trees_file)
 
     # preprocess code
     # REF
