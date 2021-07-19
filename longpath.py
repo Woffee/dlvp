@@ -492,7 +492,7 @@ def run_longpath(input_file, output_file, w2v_lp_model_file_combine, w2v_lp_mode
     # greedy_path_embedding = []
     # combine_path_embedding = []
     for index, row in all_data.iterrows():
-        func_id = row['func_id']
+        func_key = row['func_key']
 
         if row['long_path_greedy_context'] == '' or row["long_path_combine_context"]=='':
             continue
@@ -514,44 +514,63 @@ def run_longpath(input_file, output_file, w2v_lp_model_file_combine, w2v_lp_mode
 
 
         function_paths_greedy = []
+        function_paths_greedy_length = []
         for path in long_path_greedy_context:
-            # path_embedding = [] # matrix
-            path_embedding = np.zeros((max_path_length, 128))
+
+            # path_embedding = np.zeros((max_path_length, 128))
+            path_idx = np.zeros(max_path_length)
             for i, token in enumerate( path[0][0] ):
                 if type(token).__name__ == 'list':
                     # logging.info("== token is list?: yes")
                     # print("== token is list?: yes")
-                    sum_avg = tokens2vec(token, w2v_long_path_greedy_context)
-                    if not len(token) == 0:
-                        path_embedding[i] = sum_avg
+                    # sum_avg = tokens2vec(token, w2v_long_path_greedy_context)
+                    # TODO: 这里先取第一个
+                    for t in token:
+                        if t in w2v_long_path_greedy_context.wv.vocab:
+                            path_idx[i] = w2v_long_path_greedy_context.wv.vocab.get(t).index
+                            break
                 else:
                     # logging.info("== token is list?: no")
                     # print("== token is list?: no")
                     if token in w2v_long_path_greedy_context.wv.vocab:
                         # path_embedding.append(w2v_long_path_greedy_context.wv.vocab[token])
-                        path_embedding[i] = w2v_long_path_greedy_context.wv[token]
-            function_paths_greedy.append(path_embedding)
-        to_data_greedy[func_id] = function_paths_greedy
+                        # path_embedding[i] = w2v_long_path_greedy_context.wv[token]
+                        path_idx[i] = w2v_long_path_greedy_context.wv.vocab.get(token).index
+            function_paths_greedy.append(path_idx)
+            function_paths_greedy_length.append( len(path[0][0]) )
+        to_data_greedy[func_key] = {
+            'word_idx': function_paths_greedy,
+            'path_length':function_paths_greedy_length
+        }
         # greedy_path_embedding.append(function_paths_greedy)
 
 
         function_paths_combine = []
+        function_paths_combine_length = []
         for path in long_path_combine_context:
             # path_embedding = []
-            path_embedding = np.zeros((max_path_length, 128))
+            # path_embedding = np.zeros((max_path_length, 128))
+            path_idx = np.zeros(max_path_length)
             for i,token in enumerate(path[0][0]):
                 if type(token).__name__ == 'list':
-                    sum_avg = tokens2vec(token, w2v_long_path_combine_context)
-                    if not len(token) == 0:
-                        # path_embedding.append(sum_avg)
-                        path_embedding[i] = sum_avg
+                    # sum_avg = tokens2vec(token, w2v_long_path_combine_context)
+                    # if not len(token) == 0:
+                    #     # path_embedding.append(sum_avg)
+                    #     path_embedding[i] = sum_avg
+                    for t in token:
+                        if t in w2v_long_path_combine_context.wv.vocab:
+                            path_idx[i] = w2v_long_path_combine_context.wv.vocab.get(t).index
+                            break
                 else:
                     if token in w2v_long_path_combine_context.wv.vocab:
-                        # path_embedding.append(w2v_long_path_combine_context.wv.vocab[token])
-                        path_embedding[i] = w2v_long_path_greedy_context.wv[token]
-            function_paths_combine.append(path_embedding)
+                        path_idx[i] = w2v_long_path_combine_context.wv.vocab.get(token).index
+            function_paths_combine.append(path_idx)
+            function_paths_combine_length.append( len(path[0][0]) )
         # combine_path_embedding.append(function_paths_combine)
-        to_data_combine[func_id] = function_paths_combine
+        to_data_combine[func_key] = {
+            'word_idx': function_paths_combine,
+            'path_length': function_paths_combine_length
+        }
     to_file_combine = output_file + ".combine"
     to_file_greedy = output_file + ".greedy"
 
@@ -575,9 +594,9 @@ def run_ns(input_file, output_file, w2v_ns_model):
         if row['code'].strip() == '':
             continue
 
-        func_id = row['func_id']
+        func_key = row['func_key']
         ns = code2ns(row['code'])
-        ns_data[func_id] = ns
+        ns_data[func_key] = ns
 
         max_length = max(max_length, len(ns))
         corpus_ns.append(ns)
@@ -606,8 +625,18 @@ def run_ns(input_file, output_file, w2v_ns_model):
     to_data = {}
     for k in ns_data.keys():
         ns = ns_data[k]
-        matrix = tokens2matrix(ns, w2v_ns, max_length)
-        to_data[k] = matrix
+        # matrix = tokens2matrix(ns, w2v_ns, max_length)
+        word_idx = np.zeros(max_length)
+        for i, ww in enumerate(ns):
+            if i >= max_length:
+                break
+            if ww in w2v_ns.wv.vocab:
+                word_idx[i] = w2v_ns.wv.vocab.get(ww).index
+
+        to_data[k] = {
+            'word_idx': word_idx,
+            'ns_length': min(max_length, len(ns) )
+        }
 
     pickle.dump(to_data, open(output_file, "wb"))
     print("saved to %s" % output_file)

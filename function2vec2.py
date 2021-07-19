@@ -246,28 +246,28 @@ if __name__ == '__main__':
         tmp_directory = tempfile.TemporaryDirectory()
         graph2vec_input_dir = preprocess_code.preprocess_all_joern_for_graph2vec(input_file, tmp_directory.name,
                                                                                  "CFG","REF", num_partitions=10, PDT=True)
-        output_file = args.all_func_embedding_file
+        output_file = to_embedding_file_pdt
         preprocess_code.run_graph2vec(graph2vec_input_dir, output_file, num_graph2vec_workers=2, num_epoch=10)
 
-    # # LP
-    # elif embedding_type == 'lp':
-    #     tmp_directory = tempfile.TemporaryDirectory()
-    #     input_file = args.all_func_trees_file
-    #     all_functions_with_lp_file = SAVE_PATH + '/all_functions_with_trees_lp.csv'
-    #     if not os.path.exists(all_functions_with_lp_file):
-    #         longpath.preprocess_longpath(input_file, all_functions_with_lp_file)
-    #
-    #     output_file = args.all_func_embedding_file
-    #     w2v_lp_model_file_combine = SAVE_PATH + "/models/w2v_lp_combine.bin"
-    #     w2v_lp_model_file_greedy = SAVE_PATH + "/models/w2v_lp_greedy.bin"
-    #     longpath.run_longpath(all_functions_with_lp_file, output_file, w2v_lp_model_file_combine, w2v_lp_model_file_greedy)
-    #
-    # # NS
-    # elif embedding_type == 'ns':
-    #     input_file = args.all_func_trees_file
-    #     output_file = args.all_func_embedding_file
-    #     w2v_ns_model = SAVE_PATH + "/models/w2v_ns.bin"
-    #     longpath.run_ns(input_file, output_file, w2v_ns_model)
+    # LP
+    to_embedding_file_lp = SAVE_PATH + "/all_func_embedding_lp.pkl"
+    if not os.path.exists(to_embedding_file_lp):
+        tmp_directory = tempfile.TemporaryDirectory()
+        all_functions_with_lp_file = SAVE_PATH + '/all_functions_with_trees_lp.csv'
+        if not os.path.exists(all_functions_with_lp_file):
+            longpath.preprocess_longpath(input_file, all_functions_with_lp_file)
+
+        output_file = to_embedding_file_lp
+        w2v_lp_model_file_combine = SAVE_PATH + "/models/w2v_lp_combine.bin"
+        w2v_lp_model_file_greedy = SAVE_PATH + "/models/w2v_lp_greedy.bin"
+        longpath.run_longpath(all_functions_with_lp_file, output_file, w2v_lp_model_file_combine, w2v_lp_model_file_greedy)
+
+    # NS
+    to_embedding_file_ns = SAVE_PATH + "/all_func_embedding_ns.pkl"
+    if not os.path.exists(to_embedding_file_ns):
+        output_file = to_embedding_file_ns
+        w2v_ns_model = SAVE_PATH + "/models/w2v_ns.bin"
+        longpath.run_ns(input_file, output_file, w2v_ns_model)
 
     print("done")
     logger.info("done")
