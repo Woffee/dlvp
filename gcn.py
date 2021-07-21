@@ -80,6 +80,11 @@ NS_W2V_PATH = BASE_DIR + "/data/function2vec2/models/w2v_ns.bin"
 
 BATCH_SIZE = 16
 
+def myprint(s, is_log=0):
+    print(s)
+    if is_log>0:
+        logger.info(s)
+
 class GNNStack(nn.Module):
 
     def __init__(self, input_dim, hidden_dim, output_dim, lp_path_num, lp_length, lp_dim, lp_w2v_path, ns_length, ns_dim, ns_w2v_path,
@@ -149,18 +154,16 @@ class GNNStack(nn.Module):
         if self.task == 'node':
             return pyg_nn.GCNConv(input_dim, hidden_dim)
         else:
-            # TODO: self.weight = torch.nn.Parameter(torch.Tensor())
-            return pyg_nn.GINConv(nn.Sequential(nn.Linear(input_dim, hidden_dim),
-                                                nn.ReLU(), nn.Linear(hidden_dim, hidden_dim)))
+            return pyg_nn.GCNConv(input_dim, hidden_dim)
+            # return pyg_nn.GINConv(nn.Sequential(nn.Linear(input_dim, hidden_dim), nn.ReLU(), nn.Linear(hidden_dim, hidden_dim)))
 
     def forward(self, data):
         data.to(device)
 
-        x, edge_index, batch = data.x, data.edge_index, data.batch
+        x, edge_index, edge_weight, batch = data.x, data.edge_index, data.edge_weight, data.batch
 
         # DEF, REF, PDT, LP, NS --> x
         idx_lp, idx_ns, x_ref, x_def, x_pdt = data.x_lp, data.x_ns, data.x_ref, data.x_def, data.x_pdt
-        x_lp_length = data.x_lp_length
         x_ns_length = data.x_ns_length
 
         # print("forward x_ns:", x_ns.shape)
@@ -170,18 +173,21 @@ class GNNStack(nn.Module):
         # 当前 batch 总共有多少个 function。因为每个 graph 含有不同数量的 function，因此这里数值不定。
         cur_nodes_size = idx_ns.shape[0]
 
-        x_lp_length = [] # use for pack_padded_sequence
-        x_lp_list = [ torch.zeros([idx_ns.shape[0], self.lp_length], dtype=torch.float).to(device) for i in range(self.lp_path_num) ]
+        # LP
+        x_lp_list = [ [ torch.zeros(self.lp_length, dtype=torch.float, device=device) for j in range(cur_nodes_size) ] for i in range(self.lp_path_num) ]
         for i in range(self.lp_path_num):
             for j in range(idx_ns.shape[0]):
                 x_lp_list[i][j] = idx_lp[j][i]
+        x_lp_length = torch.zeros([self.lp_path_num, cur_nodes_size], dtype=torch.long, device=device)
+        for i in range(self.lp_path_num):
+            for j in range(idx_ns.shape[0]):
+                x_lp_length[i][j] = data.x_lp_length[j][i]
 
-        # LP
         gru_output_list = []
         for i in range(self.lp_path_num):
             x_lp = pad_sequence(x_lp_list[i], batch_first=True, padding_value=0)
             x_lp = self.lp_embedding(x_lp)
-            x_lp = pack_padded_sequence(x_lp, x_lp_length, batch_first=True, enforce_sorted=False)
+            x_lp = pack_padded_sequence(x_lp, x_lp_length[i], batch_first=True, enforce_sorted=False)
             out, h = self.lp_gru(x_lp)
             # print("h:", h.shape) # h: torch.Size([1, 64, 128])
             gru_output_list.append(h)
@@ -191,10 +197,12 @@ class GNNStack(nn.Module):
         del gru_output_list
         x_lp = self.lp_fc(x_lp)
 
-        # print("x_lp_after:", x_lp.shape)
 
         # NS
-        x_ns = pad_sequence(idx_ns, batch_first=True, padding_value=0)
+        idx_ns_list = [torch.zeros(self.ns_length, dtype=torch.float, device=device) for j in range(cur_nodes_size)]
+        for i in range(cur_nodes_size):
+            idx_ns_list[i] = idx_ns[i]
+        x_ns = pad_sequence(idx_ns_list, batch_first=True, padding_value=0)
         x_ns = self.ns_embedding(x_ns)
         x_ns = pack_padded_sequence(x_ns, x_ns_length, batch_first=True, enforce_sorted=False)
         out, h_ns = self.ns_gru(x_ns)
@@ -212,7 +220,7 @@ class GNNStack(nn.Module):
         # print("edge_index:", edge_index.shape)
 
         for i in range(self.num_layers):
-            x = self.convs[i](x, edge_index)
+            x = self.convs[i](x, edge_index, edge_weight)
             emb = x
             # emb: [2265, 32]
             x = F.relu(x, inplace=True)
