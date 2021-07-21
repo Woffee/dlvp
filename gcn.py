@@ -65,6 +65,9 @@ if device.type == 'cuda':
     # print('# Allocated:', round(torch.cuda.memory_allocated(0)/1024**3,1), 'GB')
     # print('# Cached:   ', round(torch.cuda.memory_reserved(0)/1024**3,1), 'GB')
 
+MODEL_SAVE_PATH = BASE_DIR + "/data/gcn_models"
+Path(MODEL_SAVE_PATH).mkdir(parents=True, exist_ok=True)
+
 FUNCTIONS_PATH = BASE_DIR + "/data/function2vec2/functions_jy"
 TASKS_FILE = "cflow/tasks.json"
 
@@ -314,7 +317,8 @@ def train(dataset, task, writer):
         data_size = len(dataset)
         print("data_size:", data_size)
         loader = DataLoader(dataset[:int(data_size * 0.8)], batch_size=BATCH_SIZE, shuffle=True)
-        test_loader = DataLoader(dataset[int(data_size * 0.8):], batch_size=BATCH_SIZE, shuffle=True)
+        vali_loader = DataLoader(dataset[int(data_size * 0.8): int(data_size * 0.9)], batch_size=BATCH_SIZE, shuffle=True)
+        test_loader = DataLoader(dataset[int(data_size * 0.9):], batch_size=BATCH_SIZE, shuffle=True)
     else:
         test_loader = loader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=True)
 
@@ -350,6 +354,8 @@ def train(dataset, task, writer):
     print("len(model.convs):", len(model.convs))
 
     opt = optim.Adam(model.parameters(), lr=0.01)
+    min_valid_loss = np.inf
+    best_model_path = ""
 
     # train
     for epoch in range(800):
@@ -397,13 +403,28 @@ def train(dataset, task, writer):
         writer.add_scalar("loss", total_loss, epoch)
 
         if epoch % 10 == 0:
-            test_acc = test(test_loader, model)
-            print("Epoch {}. Loss: {:.4f}. Test accuracy: {:.4f}".format(
-                epoch, total_loss, test_acc))
-            logger.info("Epoch {}. Loss: {:.4f}. Test accuracy: {:.4f}".format(
-                epoch, total_loss, test_acc))
-            writer.add_scalar("test accuracy", test_acc, epoch)
+            vali_acc = test(vali_loader, model)
 
+            if min_valid_loss > total_loss:
+                print(f'Validation Loss Decreased({min_valid_loss:.6f}--->{total_loss:.6f}) \t Saving The Model')
+                logger.info(f'Validation Loss Decreased({min_valid_loss:.6f}--->{total_loss:.6f}) \t Saving The Model')
+                min_valid_loss = total_loss
+                # Saving State Dict
+                torch.save(model.state_dict(), MODEL_SAVE_PATH + "gcn_model_epoch%d.pth" % epoch)
+                best_model_path = MODEL_SAVE_PATH + "gcn_model_epoch%d.pth" % epoch
+
+            print("Epoch {}. Loss: {:.4f}. Test accuracy: {:.4f}".format(
+                epoch, total_loss, vali_acc))
+            logger.info("Epoch {}. Loss: {:.4f}. Test accuracy: {:.4f}".format(
+                epoch, total_loss, vali_acc))
+            writer.add_scalar("test accuracy", vali_acc, epoch)
+
+    # Load
+    # model = Net()
+    if os.path.exists(best_model_path):
+        myprint("loading the best model: %s" % best_model_path, 1)
+        model.load_state_dict(torch.load(best_model_path))
+        model.eval()
     return model
 
 def findAllFile(base, full=False):
