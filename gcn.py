@@ -33,7 +33,8 @@ import os
 from gpu_mem_track import MemTracker
 
 import logging
-
+from pathlib import Path
+import json
 
 try:
    import cPickle as pickle
@@ -42,6 +43,7 @@ except:
 
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
 
 # log file
 now_time = time.strftime("%Y-%m-%d_%H-%M", time.localtime())
@@ -62,6 +64,9 @@ if device.type == 'cuda':
     # print('# Memory Usage:')
     # print('# Allocated:', round(torch.cuda.memory_allocated(0)/1024**3,1), 'GB')
     # print('# Cached:   ', round(torch.cuda.memory_reserved(0)/1024**3,1), 'GB')
+
+FUNCTIONS_PATH = BASE_DIR + "/data/function2vec2/functions_jy"
+TASKS_FILE = "cflow/tasks.json"
 
 # REF, DEF, PDT
 INPUT_DIM = 128
@@ -178,10 +183,10 @@ class GNNStack(nn.Module):
         for i in range(self.lp_path_num):
             for j in range(idx_ns.shape[0]):
                 x_lp_list[i][j] = idx_lp[j][i]
-        x_lp_length = torch.zeros([self.lp_path_num, cur_nodes_size], dtype=torch.long, device=device)
+        x_lp_length = torch.ones([self.lp_path_num, cur_nodes_size], dtype=torch.long, device=device)
         for i in range(self.lp_path_num):
             for j in range(idx_ns.shape[0]):
-                x_lp_length[i][j] = data.x_lp_length[j][i]
+                x_lp_length[i][j] = max(data.x_lp_length[j][i], 1)
 
         gru_output_list = []
         for i in range(self.lp_path_num):
@@ -401,53 +406,99 @@ def train(dataset, task, writer):
 
     return model
 
-def findAllFile(base):
+def findAllFile(base, full=False):
     for root, ds, fs in os.walk(base):
         for f in fs:
-            yield f
-
-
-def get_graph_data(df, deleted, func_id, func_index, nodes, edge_index):
-    """
-    nodes : [func_id, func_id ...]
-    edges : [ [index_of_func_id, index_of_func_id]... ]
-    func_index: func_id 在 nodes 中的 index
-    """
-    # print("get_graph_data - func_id:", func_id)
-    row = df.iloc[func_id]
-    if row['callees'].strip() != "[]":
-        callees = row['callees'].strip().replace("[", "").replace("]", "").replace(" ", "").split(",")
-        for ce in callees:
-            ce_func_id = int(ce)
-            if ce_func_id in deleted:
-                continue
-
-            if ce_func_id not in nodes:
-                nodes.append(ce_func_id)
-                ce_index = len(nodes) - 1
+            if full:
+                yield os.path.join(root, f)
             else:
-                ce_index = nodes.index(ce_func_id)
+                yield f
 
-            edge_index.append([func_index, ce_index])
-            nodes, edge_index = get_graph_data(df, deleted, ce_func_id, ce_index, nodes, edge_index)
+def find_edges(func_key, relations_call, relations_callby, deleted, lv=0, call_type="all", nodes=[], edge_index=[], edge_weight=[]):
+    if lv == 0:
+        nodes = [func_key]
+    func_index = nodes.index(func_key)
 
-    if row['callers'].strip() != "[]":
-        callers = row['callers'].strip().replace("[", "").replace("]", "").replace(" ", "").split(",")
-        for cr in callers:
-            cr_func_id = int(cr)
-            if cr_func_id in deleted:
+    if (lv < 2 and lv > -2) and func_key in relations_call.keys() and call_type in ['all', 'call']:
+        weight = {}
+        for sub_func in relations_call[func_key]:
+            if sub_func in deleted:
                 continue
-
-            if cr_func_id not in nodes:
-                nodes.append(cr_func_id)
-                cr_index = len(nodes) - 1
+            if not sub_func in weight.keys():
+                weight[sub_func] = 1
             else:
-                cr_index = nodes.index(cr_func_id)
+                weight[sub_func] += 1
+        for sub_func in weight.keys():
+            if sub_func not in nodes:
+                nodes.append(sub_func)
+            sub_func_index = nodes.index(sub_func)
+            edge_index.append( [func_index, sub_func_index] )
+            edge_weight.append(weight[sub_func])
+            nodes, edge_index, edge_weight = find_edges( sub_func, relations_call, relations_callby, deleted, lv+1, "call", nodes, edge_index, edge_weight)
 
-            edge_index.append([cr_index, func_index])
-            nodes, edge_index = get_graph_data(df, deleted, int(cr), cr_index, nodes, edge_index)
+    if (lv < 2 and lv > -2) and func_key in relations_callby.keys() and call_type in ['all', 'callby']:
+        weight = {}
+        for sub_func in relations_callby[func_key]:
+            if sub_func in deleted:
+                continue
+            if not sub_func in weight.keys():
+                weight[sub_func] = 1
+            else:
+                weight[sub_func] += 0.1
+        for sub_func in weight.keys():
+            if sub_func not in nodes:
+                nodes.append(sub_func)
+            sub_func_index = nodes.index(sub_func)
+            edge_index.append( [func_index, sub_func_index] )
+            edge_weight.append(weight[sub_func])
+            nodes, edge_index, edge_weight = find_edges( sub_func, relations_call, relations_callby, deleted, lv-1, "callby", nodes, edge_index, edge_weight)
+    return nodes, edge_index, edge_weight
 
-    return nodes, edge_index
+
+def read_relation_file(relation_file, deleted):
+    res = {}
+
+    # read relations
+    relations_call = {}
+    relations_callby = {}
+
+    json_str = ""
+    with open(relation_file) as f:
+        json_str = f.read().strip()
+    if json_str == "":
+        return []
+    obj = json.loads(json_str)
+
+    lv0_functions = []
+    for k, arr in obj.items():
+        for v in arr:
+            if v['type'] == 'call':
+                if k in relations_call.keys():
+                    relations_call[k].append(v['value'])
+                else:
+                    relations_call[k] = [v['value']]
+            elif v['type'] == 'callby':
+                if k in relations_callby.keys():
+                    relations_callby[k].append(v['value'])
+                else:
+                    relations_callby[k] = [v['value']]
+            elif v['type'] == 'define':
+                if v['value'] not in lv0_functions and v['value'] not in deleted:
+                    lv0_functions.append(v['value'])
+    print("len(lv0_functions):", len(lv0_functions))
+
+    for func in lv0_functions:
+        nodes = []
+        edge_index = []
+        edge_weight = []
+
+        nodes, edge_index, edge_weight = find_edges(func, relations_call, relations_callby, deleted, 0, "all", [], [], [])
+        res[func] = {
+            "nodes": nodes,
+            "edge_index": edge_index,
+            "edge_weight": edge_weight
+        }
+    return res
 
 
 class MyLargeDataset(Dataset):
@@ -463,10 +514,12 @@ class MyLargeDataset(Dataset):
     def processed_file_names(self):
         res = []
         # print("self.processed_dir:", self.processed_dir)
-        for f in findAllFile(self.processed_dir):
+        for f in findAllFile(self.processed_dir, full=True):
             # print("file: ", f)
-            if f.startswith("data_") and f.endswith(".pt"):
-                res.append(f)
+            if f.find("data_") >= 0 and f.endswith(".pt"):
+                pos = f.find("processed") + 10
+                # print(f[pos:])
+                res.append(f[pos:])
 
         print("processed_files_num:", len(res))
         return res
@@ -479,14 +532,14 @@ class MyLargeDataset(Dataset):
 
         all_funcs_lp_file = self.save_path + "/all_functions_with_trees_lp.csv"
 
-        emb_file_def = self.save_path + "/all_func_embedding_file_def.csv"
-        emb_file_ref = self.save_path + "/all_func_embedding_file_ref.csv"
-        emb_file_pdt = self.save_path + "/all_func_embedding_file_pdt.csv"
+        emb_file_def = self.save_path + "/all_func_embedding_def.csv"
+        emb_file_ref = self.save_path + "/all_func_embedding_ref.csv"
+        emb_file_pdt = self.save_path + "/all_func_embedding_pdt.csv"
 
-        emb_file_lp_combine = self.save_path + "/all_func_embedding_file_lp.pkl.combine"
-        emb_file_lp_greedy = self.save_path + "/all_func_embedding_file_lp.pkl.greedy"
+        emb_file_lp_combine = self.save_path + "/all_func_embedding_lp.pkl.combine"
+        emb_file_lp_greedy = self.save_path + "/all_func_embedding_lp.pkl.greedy"
 
-        emb_file_ns = self.save_path + "/all_func_embedding_file_ns.pkl"
+        emb_file_ns = self.save_path + "/all_func_embedding_ns.pkl"
 
         # read files
         df_all_funcs = pd.read_csv(all_funcs_lp_file)
@@ -514,113 +567,111 @@ class MyLargeDataset(Dataset):
 
         # 有些 function 无法生成 LP 和 NS，抛弃掉
         deleted = []
+        func2index = {}
         for index, row in df.iterrows():
-            func_id = int(row['func_id'])
-            if not (func_id in emb_lp_combine.keys() and func_id in emb_ns.keys()):
-                deleted.append( func_id )
+            func_key = row['func_key']
+            func2index[func_key] = index
+            if not (func_key in emb_lp_combine.keys() and func_key in emb_ns.keys()):
+                deleted.append( func_key )
         logger.info("=== no lp or ns functions: %d" % len(deleted))
 
         ii = 0
-        for index, row in df.iterrows():
-            func_id = int(row['func_id'])
-            # if func_id > 1000:
-            #     break
-            if func_id in deleted:
-                continue
+        with open(TASKS_FILE, 'r') as taskFile:
+            taskDesc = json.load(taskFile)
+            for repoName in ['nbd','libexpat','jabberd2','redis','ovs','picocom','libvips','libetpan','libreport','neomutt','libksba','miniupnp','imageworsener','mongo-c-driver','mapserver','nettle','rpm','flatpak','torque','yodl','netdata','FreeRDP','rsyslog','libsndfile','pgbouncer','pngquant','lxc']:
+                project_path = FUNCTIONS_PATH + "/" + repoName
 
-            if int(row['is_center']) == 1:
-                nodes = [func_id]
-                func_index = 0
-                edge_index = []
+                for cve_id, non_vul_commits in taskDesc[repoName]['vuln'].items():
+                    print(cve_id)
+                    relation_file = "%s/%s-relation.json" % (project_path, cve_id)
+                    funcs = read_relation_file(relation_file, deleted)
+                    for func_key, attr in funcs.items():
+                        nodes, edge_index, edge_weight = attr['nodes'], attr['edge_index'], attr['edge_weight']
+                        if len(edge_index) == 0:
+                            continue
 
-                nodes, edge_index = get_graph_data(df, deleted, func_id, func_index, nodes, edge_index)
-                # print("nodes:\n", nodes)
-                # print("edge_index:\n", edge_index)
-                if len(edge_index) == 0:
-                    continue
+                        edge_weight = torch.tensor(edge_weight, dtype=torch.float)
+                        edge_index = torch.tensor(edge_index, dtype=torch.long)
+                        if edge_index.shape[0] > 0:
+                            edge_index = edge_index - edge_index.min()
 
-                nodes_num = len(nodes)
-                edges_num = len(edge_index)
+                        commit = func_key[:40]
+                        y = 0 if commit in non_vul_commits else 1
+                        nodes_num = len(nodes)
+                        edges_num = len(edge_index)
 
-                x_lp = torch.zeros([len(nodes), LP_PATH_NUM, 60, 128], dtype=torch.float)
+                        x_lp = torch.zeros([len(nodes), LP_PATH_NUM, LP_LENGTH], dtype=torch.long)
+                        x_lp_length = torch.zeros([len(nodes), LP_PATH_NUM], dtype=torch.long)
 
-                # for i in range(LP_PATH_NUM):
-                #     # x_lp.append( np.zeros((len(nodes), 60, 128), dtype=float) )
-                #     x_lp.append( torch.zeros([len(nodes), 60, 128], dtype=torch.float))
 
-                x_ns = torch.zeros([len(nodes), 2000, 128], dtype=torch.float)
-                x_def = torch.zeros([len(nodes), 128], dtype=torch.float)
-                x_ref = torch.zeros([len(nodes), 128], dtype=torch.float)
-                x_pdt = torch.zeros([len(nodes), 128], dtype=torch.float)
-                for f_index, f_id in enumerate(nodes):
+                        x_ns = torch.zeros([len(nodes), NS_LENGTH], dtype=torch.long)
+                        x_ns_length = torch.zeros(len(nodes), dtype=torch.long)
 
-                    # x_lp_emb = np.zeros((LP_PATH_NUM, 60, 128), dtype=float)
 
-                    for i in range(len(emb_lp_combine[f_id])):
-                        if i >= LP_PATH_NUM:
-                            break
-                        # x_lp_emb[i] = torch.tensor(emb_lp_combine[f_id][i], dtype=torch.float)
-                        x_lp[f_index][i] =  torch.tensor(emb_lp_combine[f_id][i], dtype=torch.float)
+                        x_def = torch.zeros([len(nodes), INPUT_DIM], dtype=torch.float)
+                        x_ref = torch.zeros([len(nodes), INPUT_DIM], dtype=torch.float)
+                        x_pdt = torch.zeros([len(nodes), INPUT_DIM], dtype=torch.float)
+                        for i, sub_func_key in enumerate(nodes):
+                            x_lp_word_idx = emb_lp_combine[sub_func_key]['word_idx']
+                            for j in range(len(x_lp_word_idx)):
+                                if j >= LP_PATH_NUM:
+                                    break
+                                for k in range(LP_LENGTH):
+                                    x_lp[i][j][k] = torch.tensor(x_lp_word_idx[j][k], dtype=torch.long)
+                                    x_lp_length[i][j] = max(emb_lp_combine[sub_func_key]['path_length'][j], 1)
 
-                    # x_lp.append(x_lp_emb)
-                    x_ns[f_index]  = torch.tensor(emb_ns[f_id], dtype=torch.float)
-                    x_def[f_index] = torch.tensor(df_emb_def[f_id], dtype=torch.float)
-                    x_ref[f_index] = torch.tensor(df_emb_ref[f_id], dtype=torch.float)
-                    x_pdt[f_index] = torch.tensor(df_emb_pdt[f_id], dtype=torch.float)
 
-                # print("x_ns.shape:",x_ns.shape)
-                # logger.info("x_ns.shape: [%d, %d]" % (x_ns.shape[0], x_ns.shape[1]))
+                            x_ns[i] = torch.tensor(emb_ns[sub_func_key]['word_idx'], dtype=torch.long)
+                            x_ns_length[i] = max(emb_ns[sub_func_key]['ns_length'], 1)
 
-                # x_lp = torch.tensor(np.array(x_lp), dtype=torch.float)
-                # x_ns = torch.tensor(x_ns, dtype=torch.float)
-                # x_def = torch.tensor(x_def, dtype=torch.float)
-                # x_ref = torch.tensor(x_ref, dtype=torch.float)
-                # x_pdt = torch.tensor(x_pdt, dtype=torch.float)
+                            func_index = func2index[sub_func_key]
+                            x_def[i] = torch.tensor(df_emb_def[func_index], dtype=torch.float)
+                            x_ref[i] = torch.tensor(df_emb_ref[func_index], dtype=torch.float)
+                            x_pdt[i] = torch.tensor(df_emb_pdt[func_index], dtype=torch.float)
 
-                edge_index = torch.tensor(edge_index, dtype=torch.long)
-                if edge_index.shape[0] > 0:
-                    edge_index = edge_index - edge_index.min()
+                        data = Data(num_nodes=x_ns.shape[0],
+                                    edge_index=edge_index.t().contiguous(),
+                                    edge_weight=edge_weight,
+                                    y=y,
+                                    x_def=x_def,
+                                    x_ref=x_ref,
+                                    x_pdt=x_pdt,
+                                    x_lp=x_lp,
+                                    x_lp_length = x_lp_length,
+                                    x_ns=x_ns,
+                                    x_ns_length = x_ns_length
+                                    )
 
-                if int(row['vul']) == 1:
-                    y = 1
-                else:
-                    y = 0
+                        # if self.pre_filter is not None and not self.pre_filter(data):
+                        #    continue
 
-                data = Data(num_nodes=x_ns.shape[0],
-                            edge_index=edge_index.t().contiguous(),
-                            y=y,
-                            x_def=x_def,
-                            x_ref=x_ref,
-                            x_pdt=x_pdt,
-                            x_lp=x_lp,
-                            x_ns=x_ns,
-                            )
+                        # if self.pre_transform is not None:
+                        #    data = self.pre_transform(data)
+                        save_path = os.path.join(self.processed_dir, str(ii // 1000))
+                        Path(save_path).mkdir(parents=True, exist_ok=True)
 
-                # if self.pre_filter is not None and not self.pre_filter(data):
-                #    continue
+                        to_file = os.path.join(save_path, 'data_{}.pt'.format(ii))
+                        torch.save(data, to_file)
+                        print("saved to: %s, nodes_num: %d, edges_num: %d" % (to_file, nodes_num, edges_num))
+                        logger.info("saved to: %s, nodes_num: %d, edges_num: %d" % (to_file, nodes_num, edges_num))
+                        ii += 1
 
-                # if self.pre_transform is not None:
-                #    data = self.pre_transform(data)
 
-                to_file = os.path.join(self.processed_dir, 'data_{}.pt'.format(ii))
-                torch.save(data, to_file)
-                print("saved to: %s, nodes_num: %d, edges_num: %d" % (to_file, nodes_num, edges_num))
-                logger.info("saved to: %s, nodes_num: %d, edges_num: %d" % (to_file, nodes_num, edges_num))
-                ii += 1
 
 
     def len(self):
         return len(self.processed_file_names)
 
     def get(self, idx):
-        data = torch.load(os.path.join(self.processed_dir, 'data_{}.pt'.format(idx)))
+        save_path = os.path.join(self.processed_dir, str(idx // 1000))
+        data = torch.load(os.path.join(save_path, 'data_{}.pt'.format(idx)))
         return data
 
 if __name__ == '__main__':
     writer = SummaryWriter("./log/" + datetime.now().strftime("%Y%m%d-%H%M%S"))
 
     task = 'graph'
-    save_path = BASE_DIR + "/data/function2vec"
+    save_path = BASE_DIR + "/data/function2vec2"
 
     dataset = MyLargeDataset(save_path)
     model = train(dataset, task, writer)
