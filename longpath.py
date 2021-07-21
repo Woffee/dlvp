@@ -224,7 +224,7 @@ def preprocess_longpath(input_file, output_file):
 
 
         # get ast
-        code = row["code"]
+        code = row["contents"]
         code = code.split('\n')
         line_1 = code[0]
         pos = line_1.find("(")
@@ -591,11 +591,11 @@ def run_ns(input_file, output_file, w2v_ns_model):
     for index, row in all_data.iterrows():
         if index % 1000 == 0:
             print("== run_ns()... now: %d / %d" % (index, total))
-        if row['code'].strip() == '':
+        if row['contents'].strip() == '':
             continue
 
         func_key = row['func_key']
-        ns = code2ns(row['code'])
+        ns = code2ns(row['contents'])
         ns_data[func_key] = ns
 
         max_length = max(max_length, len(ns))

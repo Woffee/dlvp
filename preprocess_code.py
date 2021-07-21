@@ -578,8 +578,8 @@ def process_joern_for_graph2vec(testcase, graph_type , graph_type_next = " ", PD
     vdisc_*.csv.gz (as loaded with pandas) matching one particular
     testcase, and preprocesses it ready for the baseline model.
     """
-    graph = testcase.trees
-    code = testcase.code
+    graph = testcase.tree
+    code = testcase.contents
     
     edgelist,feature_json = get_edgelist_and_feature(graph,graph_type, code, graph_type_next, PDT, Para_link, testcase)
 
