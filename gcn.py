@@ -17,16 +17,16 @@ from datetime import datetime
 import networkx as nx
 import numpy as np
 
-from torch_geometric.datasets import TUDataset
-from torch_geometric.datasets import Planetoid
+# from torch_geometric.datasets import TUDataset
+# from torch_geometric.datasets import Planetoid
 from torch_geometric.data import DataLoader
 from torch_geometric.data import Data
 from torch_geometric.data import InMemoryDataset, Dataset, download_url
 
-import torch_geometric.transforms as T
+# import torch_geometric.transforms as T
 
 from tensorboardX import SummaryWriter
-from sklearn.manifold import TSNE
+# from sklearn.manifold import TSNE
 import matplotlib.pyplot as plt
 import pandas as pd
 import os
@@ -35,6 +35,7 @@ from gpu_mem_track import MemTracker
 import logging
 from pathlib import Path
 import json
+import argparse
 
 try:
    import cPickle as pickle
@@ -65,28 +66,63 @@ if device.type == 'cuda':
     # print('# Allocated:', round(torch.cuda.memory_allocated(0)/1024**3,1), 'GB')
     # print('# Cached:   ', round(torch.cuda.memory_reserved(0)/1024**3,1), 'GB')
 
-MODEL_SAVE_PATH = BASE_DIR + "/data/gcn_models"
+# args
+parser = argparse.ArgumentParser(description='Test for argparse')
+parser.add_argument('--tasks_file', help='tasks_file', type=str, default='cflow/tasks.json')
+parser.add_argument('--functions_path', help='functions_path', type=str, default=BASE_DIR + "/data/function2vec2/functions_jy")
+parser.add_argument('--model_save_path', help='model_save_path', type=str, default=BASE_DIR + "/data/gcn_models")
+
+parser.add_argument('--input_dim', help='input_dim', type=int, default=128)
+parser.add_argument('--hidden_dim', help='hidden_dim', type=int, default=128)
+parser.add_argument('--batch_size', help='hidden_dim', type=int, default=16)
+
+parser.add_argument('--lp_path_num', help='lp_path_num', type=int, default=20)
+parser.add_argument('--lp_length', help='lp_length', type=int, default=60)
+parser.add_argument('--lp_dim', help='lp_dim', type=int, default=128)
+parser.add_argument('--lp_w2v_path', help='lp_w2v_path', type=str, default=BASE_DIR + "/data/function2vec2/models/w2v_lp_combine.bin")
+
+parser.add_argument('--ns_length', help='ns_length', type=int, default=2000)
+parser.add_argument('--ns_dim', help='ns_dim', type=int, default=128)
+parser.add_argument('--ns_w2v_path', help='ns_w2v_path', type=str, default=BASE_DIR + "/data/function2vec2/models/w2v_ns.bin")
+args = parser.parse_args()
+
+MODEL_SAVE_PATH = args.model_save_path
 Path(MODEL_SAVE_PATH).mkdir(parents=True, exist_ok=True)
 
-FUNCTIONS_PATH = BASE_DIR + "/data/function2vec2/functions_jy"
-TASKS_FILE = "cflow/tasks.json"
+FUNCTIONS_PATH = args.functions_path
+TASKS_FILE = args.tasks_file
 
-# REF, DEF, PDT
-INPUT_DIM = 128
-HIDDEN_DIM = 128
+INPUT_DIM = args.input_dim
+HIDDEN_DIM = args.hidden_dim
+BATCH_SIZE = args.batch_size
 
-# 每一个 function 的 LP 可表示为 (20, 60, 128)
-LP_PATH_NUM = 20
-LP_LENGTH = 60
-LP_DIM = 128
-LP_W2V_PATH = BASE_DIR + "/data/function2vec2/models/w2v_lp_combine.bin"
+# 每一个 function 的 LP 可表示为 (LP_PATH_NUM, LP_LENGTH, LP_DIM)
+LP_PATH_NUM = args.lp_path_num
+LP_LENGTH = args.lp_length
+LP_DIM = args.lp_dim
+LP_W2V_PATH = args.lp_w2v_path
 
 # NS
-NS_LENGTH = 2000
-NS_DIM = 128
-NS_W2V_PATH = BASE_DIR + "/data/function2vec2/models/w2v_ns.bin"
+NS_LENGTH = args.ns_length
+NS_DIM = args.ns_dim
+NS_W2V_PATH = args.ns_w2v_path
 
-BATCH_SIZE = 16
+def plot_dataset(dataset):
+    edges_raw = dataset.data.edge_index.numpy()
+    edges = [(x, y) for x, y in zip(edges_raw[0, :], edges_raw[1, :])]
+    labels = dataset.data.y.numpy()
+
+    G = nx.Graph()
+    G.add_nodes_from(list(range(np.max(edges_raw))))
+    G.add_edges_from(edges)
+    plt.subplot(111)
+    options = {
+                'node_size': 30,
+                'width': 0.2,
+    }
+    nx.draw(G, with_labels=False, node_color=labels.tolist(), cmap=plt.cm.tab10, font_weight='bold', **options)
+    plt.show()
+
 
 def myprint(s, is_log=0):
     print(s)
@@ -120,20 +156,13 @@ class GNNStack(nn.Module):
         self.lp_w2v_model = Word2Vec.load(lp_w2v_path)
         self.lp_embedding = nn.Embedding.from_pretrained(torch.FloatTensor(self.lp_w2v_model.wv.vectors))
         self.lp_gru = nn.GRU(input_size=lp_dim, hidden_size=lp_dim, num_layers=1, batch_first=True)
-        # for l in range(lp_path_num):
-        #     """
-        #     input_size – The number of expected features in the input x
-        #     hidden_size – The number of features in the hidden state h
-        #     num_layers – Number of recurrent layers.
-        #     """
-        #     self.lp_grus.append(nn.GRU(input_size=lp_dim, hidden_size=lp_dim, num_layers=1, batch_first=True))
         self.lp_fc = nn.Linear(lp_dim * lp_path_num, input_dim)
 
         self.ns_w2v_model = Word2Vec.load(ns_w2v_path)
         self.ns_embedding = nn.Embedding.from_pretrained(torch.FloatTensor(self.ns_w2v_model.wv.vectors))
         self.ns_gru = nn.GRU(ns_dim, lp_dim, 1, batch_first=True)
 
-        # 5 个 embedding 合到一起
+        # concatenate 5 embeddings
         self.all_fc = nn.Linear(lp_dim * 5, input_dim)
 
 
@@ -173,10 +202,6 @@ class GNNStack(nn.Module):
         # DEF, REF, PDT, LP, NS --> x
         idx_lp, idx_ns, x_ref, x_def, x_pdt = data.x_lp, data.x_ns, data.x_ref, data.x_def, data.x_pdt
         x_ns_length = data.x_ns_length
-
-        # print("forward x_ns:", x_ns.shape)
-        # logger.info("forward x_ns: [%d, %d, %d]" % (x_ns.shape[0], x_ns.shape[1], x_ns.shape[2]) )
-        # print("x_lp:", x_lp.shape)
 
         # 当前 batch 总共有多少个 function。因为每个 graph 含有不同数量的 function，因此这里数值不定。
         cur_nodes_size = idx_ns.shape[0]
@@ -224,25 +249,18 @@ class GNNStack(nn.Module):
         del x_lp, x_ns, x_ref, x_def, x_pdt
         x = self.all_fc(x)
 
-        # print("x_concatenated:", x.shape)
-        # print("edge_index:", edge_index.shape)
-
         for i in range(self.num_layers):
             x = self.convs[i](x, edge_index, edge_weight)
             emb = x
-            # emb: [2265, 32]
             x = F.relu(x, inplace=True)
             x = F.dropout(x, p=self.dropout, training=self.training)
             if not i == self.num_layers - 1:
                 x = self.lns[i](x)
-        # print("x after convs:", x.shape)
+
         if self.task == 'graph':
             x = pyg_nn.global_mean_pool(x, batch)
-        # print("batch:", batch)
-        # print("x after global_mean_pool:", x.shape)
 
         x = self.post_mp(x)
-        # print("x_final.shape:", x.shape)
         return emb, F.log_softmax(x, dim=1)  # dim (int): A dimension along which log_softmax will be computed.
 
     def loss(self, pred, label):
@@ -312,7 +330,7 @@ def test(loader, model, is_validation=False):
     return correct / total
 
 
-def train(dataset, task, writer):
+def train(dataset, task, writer, plot=False):
     if task == 'graph':
         data_size = len(dataset)
         print("data_size:", data_size)
@@ -357,8 +375,10 @@ def train(dataset, task, writer):
     min_valid_loss = np.inf
     best_model_path = ""
 
+    train_accuracies, vali_accuracies = list(), list()
+
     # train
-    for epoch in range(800):
+    for epoch in range(200):
         logger.info("=== now epoch: %d" % epoch)
         total_loss = 0
         model.train()
@@ -402,22 +422,25 @@ def train(dataset, task, writer):
         total_loss /= len(loader.dataset)
         writer.add_scalar("loss", total_loss, epoch)
 
-        if epoch % 10 == 0:
-            vali_acc = test(vali_loader, model)
+        # validate
+        train_acc = test(loader, model)
+        vali_acc = test(vali_loader, model)
 
-            if min_valid_loss > total_loss:
-                print(f'Validation Loss Decreased({min_valid_loss:.6f}--->{total_loss:.6f}) \t Saving The Model')
-                logger.info(f'Validation Loss Decreased({min_valid_loss:.6f}--->{total_loss:.6f}) \t Saving The Model')
-                min_valid_loss = total_loss
-                # Saving State Dict
-                torch.save(model.state_dict(), MODEL_SAVE_PATH + "gcn_model_epoch%d.pth" % epoch)
-                best_model_path = MODEL_SAVE_PATH + "gcn_model_epoch%d.pth" % epoch
+        train_accuracies.append(train_acc)
+        vali_accuracies.append(vali_acc)
 
-            print("Epoch {}. Loss: {:.4f}. Test accuracy: {:.4f}".format(
-                epoch, total_loss, vali_acc))
-            logger.info("Epoch {}. Loss: {:.4f}. Test accuracy: {:.4f}".format(
-                epoch, total_loss, vali_acc))
-            writer.add_scalar("test accuracy", vali_acc, epoch)
+        if min_valid_loss > total_loss:
+            print(f'Validation Loss Decreased({min_valid_loss:.6f}--->{total_loss:.6f}) \t Saving The Model')
+            logger.info(f'Validation Loss Decreased({min_valid_loss:.6f}--->{total_loss:.6f}) \t Saving The Model')
+            min_valid_loss = total_loss
+            # Saving State Dict
+            torch.save(model.state_dict(), MODEL_SAVE_PATH + "/gcn_model_epoch%d.pth" % epoch)
+            best_model_path = MODEL_SAVE_PATH + "/gcn_model_epoch%d.pth" % epoch
+
+        myprint( "Epoch {}. Loss: {:.4f}. train_acc: {:.4f}. test_acc: {:.4f}".format(
+            epoch, total_loss, train_acc, vali_acc), 1 )
+
+        writer.add_scalar("test accuracy", vali_acc, epoch)
 
     # Load
     # model = Net()
@@ -425,6 +448,16 @@ def train(dataset, task, writer):
         myprint("loading the best model: %s" % best_model_path, 1)
         model.load_state_dict(torch.load(best_model_path))
         model.eval()
+
+    if plot:
+        plt.plot(train_accuracies, label="Train accuracy")
+        plt.plot(vali_accuracies, label="Validation accuracy")
+        plt.xlabel("# Epoch")
+        plt.ylabel("Accuracy")
+        plt.legend(loc='upper right')
+        # plt.show()
+        plt.savefig(MODEL_SAVE_PATH + "/gcn_model_accuracy.pdf")
+
     return model
 
 def findAllFile(base, full=False):
@@ -692,8 +725,7 @@ if __name__ == '__main__':
     writer = SummaryWriter("./log/" + datetime.now().strftime("%Y%m%d-%H%M%S"))
 
     task = 'graph'
-    save_path = BASE_DIR + "/data/function2vec2"
 
-    dataset = MyLargeDataset(save_path)
+    dataset = MyLargeDataset(FUNCTIONS_PATH)
     model = train(dataset, task, writer)
     logger.info("training GCN done.")
