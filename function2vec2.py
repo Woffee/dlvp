@@ -20,8 +20,6 @@ import longpath
 from pathlib import Path
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-SAVE_PATH = BASE_DIR + "/data/function2vec2"
-
 
 joern_path = "/opt/joern/"
 
@@ -32,20 +30,20 @@ for f in folders:
 
 # args
 parser = argparse.ArgumentParser(description='Test for argparse')
-parser.add_argument('--cur_p', help='the No. of current progress', type=int, default=0)
-parser.add_argument('--tasks_file', help='tasks_file', type=str, default='data/function2vec2/tasks.json')
+parser.add_argument('--cur_p', help='the No. of current progress', type=int, default=9)
+parser.add_argument('--tasks_file', help='tasks_file', type=str, default='cflow/tasks.json')
 parser.add_argument('--functions_path', help='functions_path', type=str, default='data/function2vec2/functions_jy')
+parser.add_argument('--save_path', help='functions_path', type=str, default = BASE_DIR + "/data/function2vec2")
 
-# PDT, DEF, REF
-# 先每个 function 对应一个 json object，追加保存到到 all_func_trees_json_file，再合并到 all_func_trees_file。
-parser.add_argument('--all_func_trees_json_file', help='all_func_trees_json_file', type=str,
-                    default= SAVE_PATH + '/all_functions_with_trees.json')
-parser.add_argument('--all_func_trees_file', help='all_func_trees_file', type=str,
-                    default= SAVE_PATH + '/all_functions_with_trees.csv')
-# LP, NS
-parser.add_argument('--all_func_embedding_file', help='all_func_embedding_file', type=str, default= SAVE_PATH + '/all_func_embedding_ref.csv')
+# parser.add_argument('--all_func_trees_json_file', help='all_func_trees_json_file', type=str,
+#                     default= SAVE_PATH + '/all_functions_with_trees.json')
+# parser.add_argument('--all_func_trees_file', help='all_func_trees_file', type=str,
+#                     default= SAVE_PATH + '/all_functions_with_trees.csv')
+# parser.add_argument('--all_func_embedding_file', help='all_func_embedding_file', type=str, default= SAVE_PATH + '/all_func_embedding_ref.csv')
+
 args = parser.parse_args()
 
+SAVE_PATH = args.save_path
 
 
 # log file
@@ -139,8 +137,11 @@ def get_existed_trees_func_id(filename):
 if __name__ == '__main__':
     tasks_file = args.tasks_file
     functions_path = args.functions_path
-    all_func_trees_json_file = args.all_func_trees_json_file
-    all_func_trees_file = args.all_func_trees_file
+
+    # 先每个 function 对应一个 json object，追加保存到到 all_func_trees_json_file，再合并到 all_func_trees_file。
+    all_func_trees_json_file = SAVE_PATH + '/all_functions_with_trees.json'
+    all_func_trees_file = SAVE_PATH + '/all_functions_with_trees.csv'
+
     cur_p = int(args.cur_p)
 
     SUB_SAVEPATH = BASE_DIR + "/data/function2vec2_%d" % cur_p
@@ -203,9 +204,15 @@ if __name__ == '__main__':
                 for line in f.readlines():
                     if line.strip() == "":
                         continue
-                    all_funcs.append(json.loads(line))
-            for pp in range(4):
-                all_func_trees_json_file_p = BASE_DIR + "/data/function2vec2_%d/all_functions_with_trees.json" % pp
+                    func = json.loads(line)
+                    if func['func_key'] not in all_funcs_keys:
+                        all_funcs.append(func)
+                        all_funcs_keys.append(func['func_key'])
+            for pp in [3]:
+                all_func_trees_json_file_p = SAVE_PATH + "_%d/all_functions_with_trees.json" % pp
+                if not os.path.exists(all_func_trees_json_file_p):
+                    continue
+                print("reading:", all_func_trees_json_file_p)
                 with open(all_func_trees_json_file_p, "r") as f:
                     for line in f.readlines():
                         if line.strip() == "":
@@ -225,33 +232,42 @@ if __name__ == '__main__':
     input_file = all_func_trees_file
     to_embedding_file_ref = SAVE_PATH + "/all_func_embedding_ref.csv"
     if not os.path.exists(to_embedding_file_ref):
+        print("running REF")
+        logger.info("running REF")
         tmp_directory = tempfile.TemporaryDirectory()
         graph2vec_input_dir = preprocess_code.preprocess_all_joern_for_graph2vec(input_file, tmp_directory.name, "REF",
                                                                                  "CALL", num_partitions=10)
         output_file = to_embedding_file_ref
         preprocess_code.run_graph2vec(graph2vec_input_dir, output_file, num_graph2vec_workers=2, num_epoch=10)
+        logger.info("running REF done")
 
     # DEF
     to_embedding_file_def = SAVE_PATH + "/all_func_embedding_def.csv"
     if not os.path.exists(to_embedding_file_def):
+        print("running DEF")
+        logger.info("running DEF")
         tmp_directory = tempfile.TemporaryDirectory()
         graph2vec_input_dir = preprocess_code.preprocess_all_joern_for_graph2vec(input_file, tmp_directory.name, "REACHING_DEF",
                                                                                  "EVAL_TYPE", num_partitions=10)
         output_file = to_embedding_file_def
         preprocess_code.run_graph2vec(graph2vec_input_dir, output_file, num_graph2vec_workers=2, num_epoch=10)
+        logger.info("running DEF done")
 
     # PDT
     to_embedding_file_pdt = SAVE_PATH + "/all_func_embedding_pdt.csv"
     if not os.path.exists(to_embedding_file_pdt):
+        print("running PDT")
+        logger.info("running PDT")
         tmp_directory = tempfile.TemporaryDirectory()
         graph2vec_input_dir = preprocess_code.preprocess_all_joern_for_graph2vec(input_file, tmp_directory.name,
                                                                                  "CFG","REF", num_partitions=10, PDT=True)
         output_file = to_embedding_file_pdt
         preprocess_code.run_graph2vec(graph2vec_input_dir, output_file, num_graph2vec_workers=2, num_epoch=10)
+        logger.info("running PDT done")
 
     # LP
     to_embedding_file_lp = SAVE_PATH + "/all_func_embedding_lp.pkl"
-    if not os.path.exists(to_embedding_file_lp):
+    if not os.path.exists(to_embedding_file_lp + ".combine"):
         tmp_directory = tempfile.TemporaryDirectory()
         all_functions_with_lp_file = SAVE_PATH + '/all_functions_with_trees_lp.csv'
         if not os.path.exists(all_functions_with_lp_file):

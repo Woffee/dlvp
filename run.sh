@@ -15,6 +15,7 @@
 # Run GCN
 python gcn.py --tasks_file /data/function2vec2/tasks.json \
   --functions_path /data/function2vec2/functions_jy \
+  --embedding_path /data/function2vec2 \
   --model_save_path /data/gcn_models \
   --input_dim 128 \
   --hidden_dim 128 \
@@ -25,4 +26,4 @@ python gcn.py --tasks_file /data/function2vec2/tasks.json \
   --lp_w2v_path /data/function2vec2/models/w2v_lp_combine.bin \
   --ns_length 2000 \
   --ns_dim 128 \
-  --ns_w2v_path /data/function2vec2/models/w2v_ns_combine.bin
+  --ns_w2v_path /data/function2vec2/models/w2v_ns.bin

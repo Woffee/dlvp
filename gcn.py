@@ -70,6 +70,7 @@ if device.type == 'cuda':
 parser = argparse.ArgumentParser(description='Test for argparse')
 parser.add_argument('--tasks_file', help='tasks_file', type=str, default='cflow/tasks.json')
 parser.add_argument('--functions_path', help='functions_path', type=str, default=BASE_DIR + "/data/function2vec2/functions_jy")
+parser.add_argument('--embedding_path', help='embedding_path', type=str, default=BASE_DIR + "/data/function2vec2")
 parser.add_argument('--model_save_path', help='model_save_path', type=str, default=BASE_DIR + "/data/gcn_models")
 
 parser.add_argument('--input_dim', help='input_dim', type=int, default=128)
@@ -86,6 +87,8 @@ parser.add_argument('--ns_dim', help='ns_dim', type=int, default=128)
 parser.add_argument('--ns_w2v_path', help='ns_w2v_path', type=str, default=BASE_DIR + "/data/function2vec2/models/w2v_ns.bin")
 args = parser.parse_args()
 
+
+EMBEDDING_PATH = args.embedding_path
 MODEL_SAVE_PATH = args.model_save_path
 Path(MODEL_SAVE_PATH).mkdir(parents=True, exist_ok=True)
 
@@ -211,7 +214,9 @@ class GNNStack(nn.Module):
         for i in range(self.lp_path_num):
             for j in range(idx_ns.shape[0]):
                 x_lp_list[i][j] = idx_lp[j][i]
-        x_lp_length = torch.ones([self.lp_path_num, cur_nodes_size], dtype=torch.long, device=device)
+
+        # 'lengths' argument should be a 1D 【CPU】 int64 tensor
+        x_lp_length = torch.ones([self.lp_path_num, cur_nodes_size], dtype=torch.long)
         for i in range(self.lp_path_num):
             for j in range(idx_ns.shape[0]):
                 x_lp_length[i][j] = max(data.x_lp_length[j][i], 1)
@@ -237,7 +242,7 @@ class GNNStack(nn.Module):
             idx_ns_list[i] = idx_ns[i]
         x_ns = pad_sequence(idx_ns_list, batch_first=True, padding_value=0)
         x_ns = self.ns_embedding(x_ns)
-        x_ns = pack_padded_sequence(x_ns, x_ns_length, batch_first=True, enforce_sorted=False)
+        x_ns = pack_padded_sequence(x_ns, x_ns_length.to('cpu'), batch_first=True, enforce_sorted=False)
         out, h_ns = self.ns_gru(x_ns)
         del out
         # print("h_ns:", h_ns.shape)
@@ -584,16 +589,16 @@ class MyLargeDataset(Dataset):
 
     def process(self):
 
-        all_funcs_lp_file = self.save_path + "/all_functions_with_trees_lp.csv"
+        all_funcs_lp_file = EMBEDDING_PATH + "/all_functions_with_trees_lp.csv"
 
-        emb_file_def = self.save_path + "/all_func_embedding_def.csv"
-        emb_file_ref = self.save_path + "/all_func_embedding_ref.csv"
-        emb_file_pdt = self.save_path + "/all_func_embedding_pdt.csv"
+        emb_file_def = EMBEDDING_PATH + "/all_func_embedding_def.csv"
+        emb_file_ref = EMBEDDING_PATH + "/all_func_embedding_ref.csv"
+        emb_file_pdt = EMBEDDING_PATH + "/all_func_embedding_pdt.csv"
 
-        emb_file_lp_combine = self.save_path + "/all_func_embedding_lp.pkl.combine"
-        emb_file_lp_greedy = self.save_path + "/all_func_embedding_lp.pkl.greedy"
+        emb_file_lp_combine = EMBEDDING_PATH + "/all_func_embedding_lp.pkl.combine"
+        emb_file_lp_greedy = EMBEDDING_PATH + "/all_func_embedding_lp.pkl.greedy"
 
-        emb_file_ns = self.save_path + "/all_func_embedding_ns.pkl"
+        emb_file_ns = EMBEDDING_PATH + "/all_func_embedding_ns.pkl"
 
         # read files
         df_all_funcs = pd.read_csv(all_funcs_lp_file)

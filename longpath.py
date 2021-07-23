@@ -29,7 +29,7 @@ except:
    import pickle
 
 # # This cell might not be needed for you.
-if os.path.exists("ubuntu_only.txt"):
+if os.path.exists("/usr/lib/llvm-8/lib/libclang-8.so.1"):
     clang.cindex.Config.set_library_file(
         '/usr/lib/llvm-8/lib/libclang-8.so.1'
     )
