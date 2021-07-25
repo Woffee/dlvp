@@ -36,6 +36,7 @@ import logging
 from pathlib import Path
 import json
 import argparse
+from sklearn.metrics import precision_score, recall_score, f1_score, accuracy_score
 
 try:
    import cPickle as pickle
@@ -96,8 +97,10 @@ FUNCTIONS_PATH = args.functions_path
 TASKS_FILE = args.tasks_file
 
 INPUT_DIM = args.input_dim
+OUTPUT_DIM = 1
 HIDDEN_DIM = args.hidden_dim
 BATCH_SIZE = args.batch_size
+LEARNING_RATE = 0.00001
 
 # 每一个 function 的 LP 可表示为 (LP_PATH_NUM, LP_LENGTH, LP_DIM)
 LP_PATH_NUM = args.lp_path_num
@@ -166,7 +169,8 @@ class GNNStack(nn.Module):
         self.ns_gru = nn.GRU(ns_dim, lp_dim, 1, batch_first=True)
 
         # concatenate 5 embeddings
-        self.all_fc = nn.Linear(lp_dim * 5, input_dim)
+        self.all_fc1 = nn.Linear(lp_dim * 3, 64 * 3)
+        self.all_fc2 = nn.Linear(64 * 3, input_dim)
 
 
         # Graph conv
@@ -178,16 +182,17 @@ class GNNStack(nn.Module):
         for l in range(2):
             self.convs.append(self.build_conv_model(hidden_dim, hidden_dim))
 
-        # post-message-passing
+        # post-message-passing (PyTorch Geometric)
         self.post_mp = nn.Sequential(
-            nn.Linear(hidden_dim, hidden_dim), nn.Dropout(0.25),
+            # nn.Linear(hidden_dim, hidden_dim), nn.Dropout(0.25),
+            nn.Linear(hidden_dim, hidden_dim), # 去掉 dropout
             nn.Linear(hidden_dim, output_dim))
         if not (self.task == 'node' or self.task == 'graph'):
             raise RuntimeError('Unknown task.')
 
         self.dropout = 0.25
         self.num_layers = 3 # len of self.convs
-        self.loss_layer = nn.CrossEntropyLoss()
+        # self.loss_layer = nn.CrossEntropyLoss()
 
     def build_conv_model(self, input_dim, hidden_dim):
         # refer to pytorch geometric nn module for different implementation of GNNs.
@@ -225,15 +230,17 @@ class GNNStack(nn.Module):
         for i in range(self.lp_path_num):
             x_lp = pad_sequence(x_lp_list[i], batch_first=True, padding_value=0)
             x_lp = self.lp_embedding(x_lp)
+            x_lp = F.normalize(x_lp)
             x_lp = pack_padded_sequence(x_lp, x_lp_length[i], batch_first=True, enforce_sorted=False)
             out, h = self.lp_gru(x_lp)
-            # print("h:", h.shape) # h: torch.Size([1, 64, 128])
+            # out, _ = pad_packed_sequence(out)
             gru_output_list.append(h)
 
         del x_lp_list
         x_lp = torch.cat(gru_output_list).view(cur_nodes_size, self.lp_dim * self.lp_path_num).to(device)
         del gru_output_list
         x_lp = self.lp_fc(x_lp)
+        x_lp = F.relu(x_lp, inplace=True)
 
 
         # NS
@@ -242,6 +249,7 @@ class GNNStack(nn.Module):
             idx_ns_list[i] = idx_ns[i]
         x_ns = pad_sequence(idx_ns_list, batch_first=True, padding_value=0)
         x_ns = self.ns_embedding(x_ns)
+        x_ns = F.normalize(x_ns)
         x_ns = pack_padded_sequence(x_ns, x_ns_length.to('cpu'), batch_first=True, enforce_sorted=False)
         out, h_ns = self.ns_gru(x_ns)
         del out
@@ -250,28 +258,35 @@ class GNNStack(nn.Module):
         del h_ns
 
         # concatenate together
-        x = torch.cat([x_pdt, x_ref, x_def, x_lp, x_ns]).view(cur_nodes_size, self.ns_dim * 5).to(device)
-        del x_lp, x_ns, x_ref, x_def, x_pdt
-        x = self.all_fc(x)
+        x = torch.cat([x_pdt, x_ref, x_def]).view(cur_nodes_size, self.ns_dim * 3).to(device)
+        x = F.normalize(x)
+        # del x_lp, x_ns, x_ref, x_def, x_pdt
+        x = F.relu(self.all_fc1(x), inplace=True)
+        x = F.relu(self.all_fc2(x), inplace=True)
 
+        x = x_ref
         for i in range(self.num_layers):
             x = self.convs[i](x, edge_index, edge_weight)
             emb = x
             x = F.relu(x, inplace=True)
-            x = F.dropout(x, p=self.dropout, training=self.training)
+            # x = F.dropout(x, p=self.dropout, training=self.training)
             if not i == self.num_layers - 1:
                 x = self.lns[i](x)
 
         if self.task == 'graph':
-            x = pyg_nn.global_mean_pool(x, batch)
+            x = pyg_nn.global_max_pool(x, batch)
 
-        x = self.post_mp(x)
-        return emb, F.log_softmax(x, dim=1)  # dim (int): A dimension along which log_softmax will be computed.
+        x = F.relu( self.post_mp(x), inplace=True )
+        # return emb, F.log_softmax(x, dim=1)  # dim (int): A dimension along which log_softmax will be computed.
+        return emb, F.sigmoid(x)
 
     def loss(self, pred, label):
         # CrossEntropyLoss torch.nn.CrossEntropyLoss
         # return F.nll_loss(pred, label)
-        return self.loss_layer(pred, label)
+        # return self.loss_layer(pred, label)
+        pred = pred.view(pred.shape[0])
+        label = label.type(torch.float)
+        return F.binary_cross_entropy(pred, label)
 
 class CustomConv(pyg_nn.MessagePassing):
     def __init__(self, in_channels, out_channels):
@@ -312,10 +327,13 @@ def test(loader, model, is_validation=False):
     model.eval()
 
     correct = 0
+    # accuracy_list = []
+    y_true = []
+    y_pred = []
     for data in loader:
         with torch.no_grad():
             emb, pred = model(data)
-            pred = pred.argmax(dim=1)
+            # pred = pred.argmax(dim=1)
             label = data.y
 
         if model.task == 'node':
@@ -324,6 +342,14 @@ def test(loader, model, is_validation=False):
             pred = pred[mask]
             label = data.y[mask]
 
+        # pred = pred > 0.5
+        pred = pred.view(pred.shape[0]) > 0.5
+        # print("==y pred:", pred)
+        # print("==y label:", label)
+        y_true.append(label.cpu())
+        y_pred.append(pred.cpu())
+        # accuracy = accuracy_score(label.cpu(), pred.cpu() )
+        # accuracy_list.append(accuracy)
         correct += pred.eq(label).sum().item()
 
     if model.task == 'graph':
@@ -332,10 +358,17 @@ def test(loader, model, is_validation=False):
         total = 0
         for data in loader.dataset:
             total += torch.sum(data.test_mask).item()
-    return correct / total
+    # return correct / total
+    y_true = torch.cat(y_true)
+    y_pred = torch.cat(y_pred)
+    return {
+        "accuracy": accuracy_score(y_true, y_pred),
+        "recall": recall_score(y_true, y_pred),
+        "f1": f1_score(y_true, y_pred),
+        "precision": precision_score(y_true, y_pred),
+    }
 
-
-def train(dataset, task, writer, plot=False):
+def train(dataset, task, writer, plot=False, print_grad=False):
     if task == 'graph':
         data_size = len(dataset)
         print("data_size:", data_size)
@@ -357,7 +390,7 @@ def train(dataset, task, writer, plot=False):
     # build model
     model = GNNStack(input_dim=INPUT_DIM,
                      hidden_dim=HIDDEN_DIM,
-                     output_dim=2,
+                     output_dim=OUTPUT_DIM,
                      lp_path_num = LP_PATH_NUM,
                      lp_length = LP_LENGTH,
                      lp_dim = LP_DIM,
@@ -369,21 +402,23 @@ def train(dataset, task, writer, plot=False):
 
     # gpu_tracker = MemTracker()  # define a GPU tracker
     # gpu_tracker.track()
-
+    # print(model)
+    # exit()
     model.to(device)
 
     # gpu_tracker.track()
 
     print("len(model.convs):", len(model.convs))
 
-    opt = optim.Adam(model.parameters(), lr=0.01)
+    # opt = optim.Adam(model.parameters(), lr=0.001)
+    opt = optim.SGD(model.parameters(), lr=LEARNING_RATE, momentum=0.9)
     min_valid_loss = np.inf
     best_model_path = ""
 
     train_accuracies, vali_accuracies = list(), list()
 
     # train
-    for epoch in range(200):
+    for epoch in range(100):
         logger.info("=== now epoch: %d" % epoch)
         total_loss = 0
         model.train()
@@ -416,7 +451,7 @@ def train(dataset, task, writer, plot=False):
 
             # delete caches
             del embedding, pred, loss
-            torch.cuda.empty_cache()
+            # torch.cuda.empty_cache()
 
             # gpu_tracker.track()
 
@@ -428,11 +463,18 @@ def train(dataset, task, writer, plot=False):
         writer.add_scalar("loss", total_loss, epoch)
 
         # validate
-        train_acc = test(loader, model)
-        vali_acc = test(vali_loader, model)
+        train_score = test(loader, model)
+        vali_score = test(vali_loader, model)
 
-        train_accuracies.append(train_acc)
-        vali_accuracies.append(vali_acc)
+        train_accuracies.append(train_score['accuracy'])
+        vali_accuracies.append(vali_score['accuracy'])
+
+        if print_grad:
+            for i, para in enumerate(model.parameters()):
+                print(f'{i + 1}th parameter tensor:', para.shape)
+                print(para)
+                print("grad:")
+                print(para.grad)
 
         if min_valid_loss > total_loss:
             print(f'Validation Loss Decreased({min_valid_loss:.6f}--->{total_loss:.6f}) \t Saving The Model')
@@ -442,17 +484,20 @@ def train(dataset, task, writer, plot=False):
             torch.save(model.state_dict(), MODEL_SAVE_PATH + "/gcn_model_epoch%d.pth" % epoch)
             best_model_path = MODEL_SAVE_PATH + "/gcn_model_epoch%d.pth" % epoch
 
-        myprint( "Epoch {}. Loss: {:.4f}. train_acc: {:.4f}. test_acc: {:.4f}".format(
-            epoch, total_loss, train_acc, vali_acc), 1 )
+        myprint( "Epoch {}. Loss: {:.4f}. train_acc: {:.4f}. vali_acc: {:.4f}".format(
+            epoch, total_loss, train_score['accuracy'], vali_score['accuracy']), 1 )
+        myprint("Epoch {}. vali_recall: {:.4f}. vali_precision: {:.4f}. vali_f1: {:.4f}".format(
+            epoch, vali_score['recall'], vali_score['precision'], vali_score['f1']), 1)
 
-        writer.add_scalar("test accuracy", vali_acc, epoch)
+        writer.add_scalar("test accuracy", vali_score['accuracy'], epoch)
 
     # Load
     # model = Net()
     if os.path.exists(best_model_path):
         myprint("loading the best model: %s" % best_model_path, 1)
         model.load_state_dict(torch.load(best_model_path))
-        model.eval()
+        test_score = test(test_loader, model)
+        myprint(json.dumps(test_score), 1)
 
     if plot:
         plt.plot(train_accuracies, label="Train accuracy")
@@ -637,7 +682,28 @@ class MyLargeDataset(Dataset):
         ii = 0
         with open(TASKS_FILE, 'r') as taskFile:
             taskDesc = json.load(taskFile)
-            for repoName in ['nbd','libexpat','jabberd2','redis','ovs','picocom','libvips','libetpan','libreport','neomutt','libksba','miniupnp','imageworsener','mongo-c-driver','mapserver','nettle','rpm','flatpak','torque','yodl','netdata','FreeRDP','rsyslog','libsndfile','pgbouncer','pngquant','lxc']:
+
+            # for local
+            finished_repos1 = ['nbd', 'libexpat', 'jabberd2', 'redis', 'ovs', 'picocom', 'libvips', 'libetpan',
+                               'libreport', 'neomutt',
+                               'libksba', 'miniupnp', 'imageworsener', 'mongo-c-driver', 'mapserver', 'nettle', 'rpm',
+                               'flatpak',
+                               'torque', 'yodl', 'netdata', 'FreeRDP', 'rsyslog', 'libsndfile', 'pgbouncer', 'pngquant',
+                               'lxc']
+
+            # for server
+            finished_repos = ['accountsservice', 'ghostpdl', 'aircrack-ng', 'atheme', 'axtls-8266', 'barebox',
+                              'beanstalkd', 'bfgminer', 'bitlbee', 'bubblewrap', 'busybox', 'bzrtp', 'capstone',
+                              'cherokee', 'cJSON', 'collectd', 'htcondor', 'conntrack-tools', 'corosync', 'yara',
+                              'das_watchdog', 'nbd', 'quagga', 'firejail', 'iperf', 'tpm2.0-tools', 'yodl', 'libXrandr',
+                              'virtio-winkvm', 'gimp', 'util-linux', 'nspluginwrapper', 'ettercap', 'libass', 'libgd',
+                              'jasper', 'varnish', 'bdwgc', 'postgres', 'musl', 'ngiflib', 'pdfresurrect', 'libreport',
+                              'libXfont', 'libevent', 'Espruino', 'ntp', 'libzip', 'rsyslog', 'shadowsocks-libev',
+                              'unrealircd', 'yubico-pam', 'libXi', 'mongo-c-driver']
+
+
+
+            for repoName in finished_repos:
                 project_path = FUNCTIONS_PATH + "/" + repoName
 
                 for cve_id, non_vul_commits in taskDesc[repoName]['vuln'].items():
@@ -711,8 +777,8 @@ class MyLargeDataset(Dataset):
 
                         to_file = os.path.join(save_path, 'data_{}.pt'.format(ii))
                         torch.save(data, to_file)
-                        print("saved to: %s, nodes_num: %d, edges_num: %d" % (to_file, nodes_num, edges_num))
-                        logger.info("saved to: %s, nodes_num: %d, edges_num: %d" % (to_file, nodes_num, edges_num))
+                        print("saved to: %s, vul: %d,nodes_num: %d, edges_num: %d" % (to_file, y, nodes_num, edges_num))
+                        logger.info("saved to: %s, vul: %d, nodes_num: %d, edges_num: %d" % (to_file, y, nodes_num, edges_num))
                         ii += 1
 
 
@@ -731,6 +797,6 @@ if __name__ == '__main__':
 
     task = 'graph'
 
-    dataset = MyLargeDataset(FUNCTIONS_PATH)
-    model = train(dataset, task, writer)
+    dataset = MyLargeDataset(EMBEDDING_PATH)
+    model = train(dataset, task, writer, plot=False, print_grad=False)
     logger.info("training GCN done.")
