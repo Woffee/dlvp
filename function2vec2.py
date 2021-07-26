@@ -24,7 +24,7 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 joern_path = "/opt/joern/"
 
 # make dirs
-folders = ['data/', 'logs/', 'projects/', 'data/function2vec2', "data/preprocess", 'data/function2vec2/models']
+folders = ['data/', 'logs/', 'projects/', 'data/function2vec3', "data/preprocess", 'data/function2vec3/models']
 for f in folders:
     Path(f).mkdir(parents=True, exist_ok=True)
 
@@ -140,6 +140,7 @@ if __name__ == '__main__':
 
     # 先每个 function 对应一个 json object，追加保存到到 all_func_trees_json_file，再合并到 all_func_trees_file。
     all_func_trees_json_file = SAVE_PATH + '/all_functions_with_trees.json'
+    all_func_trees_json_file_merged = SAVE_PATH + '/all_functions_with_trees_merged.json'
     all_func_trees_file = SAVE_PATH + '/all_functions_with_trees.csv'
 
     cur_p = int(args.cur_p)
@@ -147,7 +148,7 @@ if __name__ == '__main__':
     SUB_SAVEPATH = BASE_DIR + "/data/function2vec2_%d" % cur_p
     Path(SUB_SAVEPATH).mkdir(parents=True, exist_ok=True)
 
-    if not os.path.exists(all_func_trees_file):
+    if not os.path.exists(all_func_trees_json_file_merged):
         if cur_p < 9: # 用 9 来代替是否合并处理好的数据
             # get trees from code using Joern
             all_func_trees_json_file_p = SUB_SAVEPATH + '/all_functions_with_trees.json'
@@ -197,39 +198,47 @@ if __name__ == '__main__':
             logger.info("sub progress %d done" % cur_p)
             exit()
         else:
+            logger.info("merge functions together (json)")
             # save jsons (with trees) to a csv file
-            all_funcs = []
+            # all_funcs = []
             all_funcs_keys = []
             with open(all_func_trees_json_file, "r") as f:
                 for line in f.readlines():
-                    if line.strip() == "":
+                    l = line.strip()
+                    if l == "":
                         continue
-                    func = json.loads(line)
+                    func = json.loads(l)
                     if func['func_key'] not in all_funcs_keys:
-                        all_funcs.append(func)
+                        # all_funcs.append(func)
                         all_funcs_keys.append(func['func_key'])
-            for pp in [3]:
+                        with open(all_func_trees_json_file_merged, "a") as fw:
+                            fw.write(l + "\n")
+            for pp in range(4):
                 all_func_trees_json_file_p = SAVE_PATH + "_%d/all_functions_with_trees.json" % pp
                 if not os.path.exists(all_func_trees_json_file_p):
                     continue
                 print("reading:", all_func_trees_json_file_p)
                 with open(all_func_trees_json_file_p, "r") as f:
                     for line in f.readlines():
-                        if line.strip() == "":
+                        l = line.strip()
+                        if l == "":
                             continue
-                        func = json.loads(line)
-                        if func['func_key'] not in all_funcs_keys:
-                            all_funcs.append(func)
-                            all_funcs_keys.append(func['func_key'])
 
-            df_functions = pd.DataFrame(all_funcs)
-            df_functions.to_csv(all_func_trees_file, sep=',', index=None)
-            print("saved to:", all_func_trees_file)
-            logger.info("saved to: %s" % all_func_trees_file)
+                        func = json.loads(l)
+                        if func['func_key'] not in all_funcs_keys:
+                            # all_funcs.append(func)
+                            all_funcs_keys.append(func['func_key'])
+                            with open(all_func_trees_json_file_merged, "a") as fw:
+                                fw.write(l + "\n")
+            logger.info("merged: " + all_func_trees_json_file_merged)
+            # df_functions = pd.DataFrame(all_funcs)
+            # df_functions.to_csv(all_func_trees_file, sep=',', index=None)
+            # print("saved to:", all_func_trees_file)
+            # logger.info("saved to: %s" % all_func_trees_file)
 
     # preprocess code
     # REF
-    input_file = all_func_trees_file
+    input_file = all_func_trees_json_file_merged
     to_embedding_file_ref = SAVE_PATH + "/all_func_embedding_ref.csv"
     if not os.path.exists(to_embedding_file_ref):
         print("running REF")
@@ -265,25 +274,34 @@ if __name__ == '__main__':
         preprocess_code.run_graph2vec(graph2vec_input_dir, output_file, num_graph2vec_workers=2, num_epoch=10)
         logger.info("running PDT done")
 
+
+    input_file = all_func_trees_json_file_merged
     # LP
     to_embedding_file_lp = SAVE_PATH + "/all_func_embedding_lp.pkl"
     if not os.path.exists(to_embedding_file_lp + ".combine"):
+        print("running LP")
+        logger.info("running LP")
         tmp_directory = tempfile.TemporaryDirectory()
-        all_functions_with_lp_file = SAVE_PATH + '/all_functions_with_trees_lp.csv'
+        all_functions_with_lp_file = SAVE_PATH + '/all_functions_with_trees_lp.json'
         if not os.path.exists(all_functions_with_lp_file):
-            longpath.preprocess_longpath(input_file, all_functions_with_lp_file)
+            longpath.preprocess_longpath(input_file, all_functions_with_lp_file, "json")
 
+        logger.info("run_longpath()...")
         output_file = to_embedding_file_lp
         w2v_lp_model_file_combine = SAVE_PATH + "/models/w2v_lp_combine.bin"
         w2v_lp_model_file_greedy = SAVE_PATH + "/models/w2v_lp_greedy.bin"
         longpath.run_longpath(all_functions_with_lp_file, output_file, w2v_lp_model_file_combine, w2v_lp_model_file_greedy)
+        logger.info("running LP done")
 
     # NS
     to_embedding_file_ns = SAVE_PATH + "/all_func_embedding_ns.pkl"
     if not os.path.exists(to_embedding_file_ns):
+        print("running NS")
+        logger.info("running NS")
         output_file = to_embedding_file_ns
         w2v_ns_model = SAVE_PATH + "/models/w2v_ns.bin"
         longpath.run_ns(input_file, output_file, w2v_ns_model)
+        logger.info("running NS done")
 
     print("done")
     logger.info("done")
