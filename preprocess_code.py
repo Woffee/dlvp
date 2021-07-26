@@ -40,6 +40,7 @@ import pandas as pd
 
 from tqdm import tqdm
 import networkx as nx
+import logging
 
 
 # This cell might not be needed for you.
@@ -409,7 +410,7 @@ def preprocess_all_for_graph2vec(csv_location, output_location, num_partitions=2
 
     return graph2vec_input_dir
 
-def preprocess_all_joern_for_graph2vec(csv_location, output_location, graph_type, graph_type_next, num_partitions=20, PDT = False, Para_link = False):
+def preprocess_all_joern_for_graph2vec(input_file, output_location, graph_type, graph_type_next, num_partitions=20, PDT = False, Para_link = False):
     """
     Given a data set (e.g. juliet.csv.zip or vdisc_*.czv.gz) loaded in
     as a pandas dataframe, it applies the graph2vec embedding to the
@@ -418,36 +419,63 @@ def preprocess_all_joern_for_graph2vec(csv_location, output_location, graph_type
     """
     print("Preprocess our code so it can be used as an input into graph2vec.")
 
-    data = pd.read_csv(csv_location)
-    data = data.fillna('')
-    data = dd.from_pandas(data, npartitions=num_partitions)
-    graphs = data.apply(
-        process_joern_for_graph2vec,
-        args = (graph_type,graph_type_next,PDT,Para_link,),
-        axis='columns',
-        meta=('process_joern_for_graph2vec', 'unicode'),
-    )
+    if input_file.endswith(".csv"):
+        data = pd.read_csv(input_file)
+        data = data.fillna('')
+        data = dd.from_pandas(data, npartitions=num_partitions)
+        graphs = data.apply(
+            process_joern_for_graph2vec,
+            args = (graph_type,graph_type_next,PDT,Para_link,),
+            axis='columns',
+            meta=('process_joern_for_graph2vec', 'unicode'),
+        )
+        print("`-> Finished preparing data for graph2vec.")
+        # print("Dataset pre-processed for graph2vec. Saving to file:")
+        # graphs.to_csv(tmp_directory.name + "/juliet_ready_for_graph2vec.csv.gz")
+        # print("`-> Saved.")
 
-    print("`-> Finished preparing data for graph2vec.")
+        print("Making a temporary directory to put our graph2vec inputs into.")
 
-    # print("Dataset pre-processed for graph2vec. Saving to file:")
-    # graphs.to_csv(tmp_directory.name + "/juliet_ready_for_graph2vec.csv.gz")
-    # print("`-> Saved.")
+        graph2vec_input_dir = output_location + "/graph2vec_input/"
+        os.makedirs(graph2vec_input_dir, exist_ok=True)
 
-    print("Making a temporary directory to put our graph2vec inputs into.")
+        print("Save the graph2vec input into a file for each datapoint:")
+
+        for index, row in graphs.iteritems():
+            print("Current Iteration: "+str(index))
+            with open(graph2vec_input_dir + str(index) + ".json", 'w') as f:
+                f.write(row)
+    else: # json
+        logging.info("reading file: " + input_file)
+        logging.info("Making a temporary directory to put our graph2vec inputs into.")
+        print("reading file:", input_file)
+        print("Making a temporary directory to put our graph2vec inputs into.")
+
+        graph2vec_input_dir = output_location + "/graph2vec_input/"
+        os.makedirs(graph2vec_input_dir, exist_ok=True)
+
+        print("Save the graph2vec input into a file for each datapoint:")
 
 
-    graph2vec_input_dir = output_location + "/graph2vec_input/"
-    os.makedirs(graph2vec_input_dir, exist_ok=True)
+        ii = 0
+        with open(input_file, "r") as fr:
+            for line in fr.readlines():
+                l = line.strip()
+                if l == "":
+                    continue
 
-    print("Save the graph2vec input into a file for each datapoint:")
+                if ii % 1000 == 0:
+                    logging.info("Current Iteration: " + str(ii))
+                    print("Current Iteration: " + str(ii))
+                func = json.loads(l)
 
-    for index, row in graphs.iteritems():
-        print("Current Iteration: "+str(index))
-        with open(graph2vec_input_dir + str(index) + ".json", 'w') as f:
-            f.write(row)
+                res = process_joern_for_graph2vec2(func['tree'], func['contents'] ,graph_type,graph_type_next,PDT,Para_link )
+                with open(graph2vec_input_dir + str(ii) + ".json", 'w') as fw:
+                    fw.write(res)
+                ii += 1
 
     print("`-> Done.")
+    logging.info("`-> Done.")
 
     return graph2vec_input_dir
 
@@ -582,6 +610,23 @@ def process_joern_for_graph2vec(testcase, graph_type , graph_type_next = " ", PD
     code = testcase.contents
     
     edgelist,feature_json = get_edgelist_and_feature(graph,graph_type, code, graph_type_next, PDT, Para_link, testcase)
+
+    graph2vec_representation = {
+        "edges": edgelist,
+        "features": feature_json
+    }
+
+    return json.dumps(graph2vec_representation)
+
+
+def process_joern_for_graph2vec2(tree, contents, graph_type, graph_type_next=" ", PDT=False, Para_link=False, **kwargs):
+    """
+    Takes in a list of files/datapoints from juliet.csv.zip or
+    vdisc_*.csv.gz (as loaded with pandas) matching one particular
+    testcase, and preprocesses it ready for the baseline model.
+    """
+
+    edgelist, feature_json = get_edgelist_and_feature(tree, graph_type, contents, graph_type_next, PDT, Para_link)
 
     graph2vec_representation = {
         "edges": edgelist,
