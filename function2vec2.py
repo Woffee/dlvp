@@ -24,9 +24,9 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 joern_path = "/opt/joern/"
 
 # make dirs
-folders = ['data/', 'logs/', 'projects/', 'data/function2vec3', "data/preprocess", 'data/function2vec3/models']
-for f in folders:
-    Path(f).mkdir(parents=True, exist_ok=True)
+# folders = ['data/', 'logs/', 'projects/', 'data/function2vec3', "data/preprocess", 'data/function2vec3/models']
+# for f in folders:
+#     Path(f).mkdir(parents=True, exist_ok=True)
 
 # args
 parser = argparse.ArgumentParser(description='Test for argparse')
@@ -44,9 +44,10 @@ parser.add_argument('--save_path', help='functions_path', type=str, default = BA
 args = parser.parse_args()
 
 SAVE_PATH = args.save_path
-
+Path(SAVE_PATH).mkdir(parents=True, exist_ok=True)
 
 # log file
+Path("logs").mkdir(parents=True, exist_ok=True)
 now_time = time.strftime("%Y-%m-%d_%H-%M", time.localtime())
 logging.basicConfig(level=logging.INFO,
                     format='%(asctime)s %(levelname)s %(filename)s line: %(lineno)s - %(message)s',
@@ -214,10 +215,11 @@ if __name__ == '__main__':
                         with open(all_func_trees_json_file_merged, "a") as fw:
                             fw.write(l + "\n")
             for pp in range(4):
-                all_func_trees_json_file_p = SAVE_PATH + "_%d/all_functions_with_trees.json" % pp
+                all_func_trees_json_file_p = SAVE_PATH + "/all_functions_with_trees_%d.json" % pp
                 if not os.path.exists(all_func_trees_json_file_p):
                     continue
                 print("reading:", all_func_trees_json_file_p)
+                logger.info("reading: %s" % all_func_trees_json_file_p )
                 with open(all_func_trees_json_file_p, "r") as f:
                     for line in f.readlines():
                         l = line.strip()
@@ -277,6 +279,7 @@ if __name__ == '__main__':
 
     input_file = all_func_trees_json_file_merged
     # LP
+    Path(SAVE_PATH+"/models").mkdir(parents=True, exist_ok=True)
     to_embedding_file_lp = SAVE_PATH + "/all_func_embedding_lp.pkl"
     if not os.path.exists(to_embedding_file_lp + ".combine"):
         print("running LP")
