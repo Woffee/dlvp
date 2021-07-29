@@ -52,7 +52,7 @@ now_time = time.strftime("%Y-%m-%d_%H-%M", time.localtime())
 logging.basicConfig(level=logging.INFO,
                     format='%(asctime)s %(levelname)s %(filename)s line: %(lineno)s - %(message)s',
                     datefmt='%Y-%m-%d %H:%M:%S',
-                    filename=BASE_DIR + '/logs/' + now_time + '.log')
+                    filename=BASE_DIR + '/logs/' + now_time + '_gcn.log')
 logger = logging.getLogger(__name__)
 
 # setting device on GPU if available, else CPU
@@ -77,6 +77,7 @@ parser.add_argument('--model_save_path', help='model_save_path', type=str, defau
 parser.add_argument('--input_dim', help='input_dim', type=int, default=128)
 parser.add_argument('--hidden_dim', help='hidden_dim', type=int, default=128)
 parser.add_argument('--batch_size', help='hidden_dim', type=int, default=16)
+parser.add_argument('--learning_rate', help='learning_rate', type=float, default=0.00001)
 
 parser.add_argument('--lp_path_num', help='lp_path_num', type=int, default=20)
 parser.add_argument('--lp_length', help='lp_length', type=int, default=60)
@@ -86,8 +87,11 @@ parser.add_argument('--lp_w2v_path', help='lp_w2v_path', type=str, default=BASE_
 parser.add_argument('--ns_length', help='ns_length', type=int, default=2000)
 parser.add_argument('--ns_dim', help='ns_dim', type=int, default=128)
 parser.add_argument('--ns_w2v_path', help='ns_w2v_path', type=str, default=BASE_DIR + "/data/function2vec2/models/w2v_ns.bin")
+
+parser.add_argument('--log_msg', help='log_msg', type=str, default="PDT + F1-loss")
 args = parser.parse_args()
 
+logger.info("gcn parameters %s", args)
 
 EMBEDDING_PATH = args.embedding_path
 MODEL_SAVE_PATH = args.model_save_path
@@ -100,7 +104,7 @@ INPUT_DIM = args.input_dim
 OUTPUT_DIM = 1
 HIDDEN_DIM = args.hidden_dim
 BATCH_SIZE = args.batch_size
-LEARNING_RATE = 0.00001
+LEARNING_RATE = args.learning_rate
 
 # 每一个 function 的 LP 可表示为 (LP_PATH_NUM, LP_LENGTH, LP_DIM)
 LP_PATH_NUM = args.lp_path_num
@@ -169,8 +173,8 @@ class GNNStack(nn.Module):
         self.ns_gru = nn.GRU(ns_dim, lp_dim, 1, batch_first=True)
 
         # concatenate 5 embeddings
-        self.all_fc1 = nn.Linear(lp_dim * 3, 64 * 3)
-        self.all_fc2 = nn.Linear(64 * 3, input_dim)
+        self.all_fc1 = nn.Linear(input_dim * 3, input_dim * 2)
+        self.all_fc2 = nn.Linear(input_dim * 2, input_dim)
 
 
         # Graph conv
@@ -257,14 +261,27 @@ class GNNStack(nn.Module):
         x_ns = h_ns.view(cur_nodes_size, self.ns_dim)
         del h_ns
 
-        # concatenate together
-        x = torch.cat([x_pdt, x_ref, x_def]).view(cur_nodes_size, self.ns_dim * 3).to(device)
-        x = F.normalize(x)
-        # del x_lp, x_ns, x_ref, x_def, x_pdt
-        x = F.relu(self.all_fc1(x), inplace=True)
-        x = F.relu(self.all_fc2(x), inplace=True)
+        # 1. concatenate together
+        # x_pdt = F.normalize(x_pdt)
+        # x_ref = F.normalize(x_ref)
+        # x_def = F.normalize(x_def)
+        # x = torch.cat([x_pdt, x_ref, x_def]).view(cur_nodes_size, self.ns_dim * 3).to(device)
+        # # x = F.normalize(x)
+        # # del x_lp, x_ns, x_ref, x_def, x_pdt
+        # x = F.relu(self.all_fc1(x), inplace=True)
+        # x = F.relu(self.all_fc2(x), inplace=True)
 
-        x = x_ref
+        # or 2. mul them to [input_dim, input_dim, input_dim]
+        # x_ref = x_ref.view([cur_nodes_size, self.input_dim, 1, 1])
+        # x_pdt = x_pdt.view([cur_nodes_size, 1, self.input_dim, 1])
+        # x_def = x_def.view([cur_nodes_size, 1, 1, self.input_dim])
+        # x = (x_ref * x_pdt * x_def).flatten().view([cur_nodes_size, self.input_dim * self.input_dim * self.input_dim])
+        # x = F.normalize(x)
+        # x = F.relu(self.all_fc1(x), inplace=True)
+
+        # 3
+        x = x_pdt
+
         for i in range(self.num_layers):
             x = self.convs[i](x, edge_index, edge_weight)
             emb = x
@@ -286,7 +303,23 @@ class GNNStack(nn.Module):
         # return self.loss_layer(pred, label)
         pred = pred.view(pred.shape[0])
         label = label.type(torch.float)
-        return F.binary_cross_entropy(pred, label)
+
+        # F1-loss: https://www.kaggle.com/c/human-protein-atlas-image-classification/discussion/77289
+        loss = 0
+        lack_cls = label.sum(dim=0) == 0
+        if lack_cls.any():
+            loss += F.binary_cross_entropy_with_logits(
+                label[:, lack_cls], label[:, lack_cls])
+        # predict = torch.sigmoid(pred)
+        predict = torch.clamp(pred * (1 - label), min=0.01) + pred * label
+        tp = predict * label
+        tp = tp.sum(dim=0)
+        precision = tp / (predict.sum(dim=0) + 1e-8)
+        recall = tp / (label.sum(dim=0) + 1e-8)
+        f1 = 2 * (precision * recall / (precision + recall + 1e-8))
+        return 1 - f1.mean() + loss
+
+        # return F.binary_cross_entropy(pred, label)
 
 class CustomConv(pyg_nn.MessagePassing):
     def __init__(self, in_channels, out_channels):
@@ -327,7 +360,6 @@ def test(loader, model, is_validation=False):
     model.eval()
 
     correct = 0
-    # accuracy_list = []
     y_true = []
     y_pred = []
     for data in loader:
@@ -344,12 +376,8 @@ def test(loader, model, is_validation=False):
 
         # pred = pred > 0.5
         pred = pred.view(pred.shape[0]) > 0.5
-        # print("==y pred:", pred)
-        # print("==y label:", label)
         y_true.append(label.cpu())
         y_pred.append(pred.cpu())
-        # accuracy = accuracy_score(label.cpu(), pred.cpu() )
-        # accuracy_list.append(accuracy)
         correct += pred.eq(label).sum().item()
 
     if model.task == 'graph':
@@ -361,17 +389,27 @@ def test(loader, model, is_validation=False):
     # return correct / total
     y_true = torch.cat(y_true)
     y_pred = torch.cat(y_pred)
-    return {
+    res = {
         "accuracy": accuracy_score(y_true, y_pred),
         "recall": recall_score(y_true, y_pred),
         "f1": f1_score(y_true, y_pred),
         "precision": precision_score(y_true, y_pred),
     }
+    if res['f1'] < 0.01:
+        logger.info("y_true: {}".format(y_true))
+        logger.info("y_pred: {}".format(y_pred))
+    return res
 
 def train(dataset, task, writer, plot=False, print_grad=False):
     if task == 'graph':
         data_size = len(dataset)
         print("data_size:", data_size)
+        nodes_sum = 0
+        edges_sum = 0
+        for data in dataset:
+            nodes_sum += data.num_nodes
+            edges_sum += data.num_edges
+        logger.info("data_size: %d, nodes_avg: %.4f, edges_sum: %.4f" % (data_size, nodes_sum/data_size, edges_sum/data_size))
         loader = DataLoader(dataset[:int(data_size * 0.8)], batch_size=BATCH_SIZE, shuffle=True)
         vali_loader = DataLoader(dataset[int(data_size * 0.8): int(data_size * 0.9)], batch_size=BATCH_SIZE, shuffle=True)
         test_loader = DataLoader(dataset[int(data_size * 0.9):], batch_size=BATCH_SIZE, shuffle=True)
@@ -477,8 +515,8 @@ def train(dataset, task, writer, plot=False, print_grad=False):
                 print(para.grad)
 
         if min_valid_loss > total_loss:
-            print(f'Validation Loss Decreased({min_valid_loss:.6f}--->{total_loss:.6f}) \t Saving The Model')
-            logger.info(f'Validation Loss Decreased({min_valid_loss:.6f}--->{total_loss:.6f}) \t Saving The Model')
+            print(f'Training Loss Decreased({min_valid_loss:.6f}--->{total_loss:.6f}) \t Saving The Model')
+            logger.info(f'Training Loss Decreased({min_valid_loss:.6f}--->{total_loss:.6f}) \t Saving The Model')
             min_valid_loss = total_loss
             # Saving State Dict
             torch.save(model.state_dict(), MODEL_SAVE_PATH + "/gcn_model_epoch%d.pth" % epoch)
@@ -486,10 +524,12 @@ def train(dataset, task, writer, plot=False, print_grad=False):
 
         myprint( "Epoch {}. Loss: {:.4f}. train_acc: {:.4f}. vali_acc: {:.4f}".format(
             epoch, total_loss, train_score['accuracy'], vali_score['accuracy']), 1 )
+        myprint("Epoch {}. trai_recall: {:.4f}. trai_precision: {:.4f}. trai_f1: {:.4f}".format(
+            epoch, train_score['recall'], train_score['precision'], train_score['f1']), 1)
         myprint("Epoch {}. vali_recall: {:.4f}. vali_precision: {:.4f}. vali_f1: {:.4f}".format(
             epoch, vali_score['recall'], vali_score['precision'], vali_score['f1']), 1)
 
-        writer.add_scalar("test accuracy", vali_score['accuracy'], epoch)
+        writer.add_scalar("test_accuracy", vali_score['accuracy'], epoch)
 
     # Load
     # model = Net()
@@ -497,8 +537,10 @@ def train(dataset, task, writer, plot=False, print_grad=False):
         myprint("loading the best model: %s" % best_model_path, 1)
         model.load_state_dict(torch.load(best_model_path))
         test_score = test(test_loader, model)
-        myprint(json.dumps(test_score), 1)
-
+        myprint("Test:", 1)
+        myprint("Accuracy\tRecall\tPrecision\tF1",1)
+        myprint("{:.4f}\t{:.4f}\t{:.4f}\t{:.4f}".format(
+            test_score['accuracy'],test_score['recall'],test_score['precision'],test_score['f1']),1)
     if plot:
         plt.plot(train_accuracies, label="Train accuracy")
         plt.plot(vali_accuracies, label="Validation accuracy")
@@ -531,7 +573,8 @@ def find_edges(func_key, relations_call, relations_callby, deleted, lv=0, call_t
             if not sub_func in weight.keys():
                 weight[sub_func] = 1
             else:
-                weight[sub_func] += 1
+                if weight[sub_func] < 1.5:
+                    weight[sub_func] += 0.1
         for sub_func in weight.keys():
             if sub_func not in nodes:
                 nodes.append(sub_func)
@@ -548,7 +591,8 @@ def find_edges(func_key, relations_call, relations_callby, deleted, lv=0, call_t
             if not sub_func in weight.keys():
                 weight[sub_func] = 1
             else:
-                weight[sub_func] += 0.1
+                if weight[sub_func] < 1.5:
+                    weight[sub_func] += 0.1
         for sub_func in weight.keys():
             if sub_func not in nodes:
                 nodes.append(sub_func)
@@ -567,6 +611,9 @@ def read_relation_file(relation_file, deleted):
     relations_callby = {}
 
     json_str = ""
+    if not os.path.exists(relation_file):
+        return res
+
     with open(relation_file) as f:
         json_str = f.read().strip()
     if json_str == "":
@@ -625,7 +672,7 @@ class MyLargeDataset(Dataset):
                 # print(f[pos:])
                 res.append(f[pos:])
 
-        print("processed_files_num:", len(res))
+        # print("processed_files_num:", len(res))
         return res
 
     def download(self):
@@ -634,7 +681,7 @@ class MyLargeDataset(Dataset):
 
     def process(self):
 
-        all_funcs_lp_file = EMBEDDING_PATH + "/all_functions_with_trees_lp.csv"
+        all_func_trees_json_file_merged = EMBEDDING_PATH + '/all_functions_with_trees_merged.json'
 
         emb_file_def = EMBEDDING_PATH + "/all_func_embedding_def.csv"
         emb_file_ref = EMBEDDING_PATH + "/all_func_embedding_ref.csv"
@@ -646,8 +693,6 @@ class MyLargeDataset(Dataset):
         emb_file_ns = EMBEDDING_PATH + "/all_func_embedding_ns.pkl"
 
         # read files
-        df_all_funcs = pd.read_csv(all_funcs_lp_file)
-
         df_emb_def = pd.read_csv(emb_file_def).drop(columns=['type']).values
         df_emb_ref = pd.read_csv(emb_file_ref).drop(columns=['type']).values
         df_emb_pdt = pd.read_csv(emb_file_pdt).drop(columns=['type']).values
@@ -657,8 +702,6 @@ class MyLargeDataset(Dataset):
 
         emb_ns = pickle.load(open(emb_file_ns, "rb"))
 
-        print("len(df_all_funcs):", len(df_all_funcs))
-
         print("len(df_emb_def):", len(df_emb_def))
         print("len(df_emb_ref):", len(df_emb_ref))
         print("len(df_emb_pdt):", len(df_emb_pdt))
@@ -667,16 +710,33 @@ class MyLargeDataset(Dataset):
         print("len(emb_lp_greedy):", len(emb_lp_greedy))
         print("len(emb_ns):", len(emb_ns))
 
-        df = df_all_funcs
+
 
         # 有些 function 无法生成 LP 和 NS，抛弃掉
         deleted = []
         func2index = {}
-        for index, row in df.iterrows():
-            func_key = row['func_key']
-            func2index[func_key] = index
-            if not (func_key in emb_lp_combine.keys() and func_key in emb_ns.keys()):
-                deleted.append( func_key )
+
+        ii = 0
+        with open(all_func_trees_json_file_merged, "r") as fr:
+            for line in fr.readlines():
+                l = line.strip()
+                # if l == "":
+                #     continue
+                func = json.loads(l)
+
+                func_key = func['func_key']
+                func2index[func_key] = ii
+                if not (func_key in emb_lp_combine.keys() and func_key in emb_ns.keys()):
+                    deleted.append(func_key)
+                ii += 1
+
+        logger.info("all functions: %d" % ii)
+
+        # for index, row in df.iterrows():
+        #     func_key = row['func_key']
+        #     func2index[func_key] = index
+        #     if not (func_key in emb_lp_combine.keys() and func_key in emb_ns.keys()):
+        #         deleted.append( func_key )
         logger.info("=== no lp or ns functions: %d" % len(deleted))
 
         ii = 0
@@ -703,12 +763,16 @@ class MyLargeDataset(Dataset):
 
 
 
-            for repoName in finished_repos:
+            for repoName in taskDesc:
                 project_path = FUNCTIONS_PATH + "/" + repoName
 
                 for cve_id, non_vul_commits in taskDesc[repoName]['vuln'].items():
                     print(cve_id)
                     relation_file = "%s/%s-relation.json" % (project_path, cve_id)
+                    if not os.path.exists(relation_file):
+                        logger.info("file not existed: %s" % relation_file)
+                        continue
+
                     funcs = read_relation_file(relation_file, deleted)
                     for func_key, attr in funcs.items():
                         nodes, edge_index, edge_weight = attr['nodes'], attr['edge_index'], attr['edge_weight']
@@ -736,7 +800,15 @@ class MyLargeDataset(Dataset):
                         x_def = torch.zeros([len(nodes), INPUT_DIM], dtype=torch.float)
                         x_ref = torch.zeros([len(nodes), INPUT_DIM], dtype=torch.float)
                         x_pdt = torch.zeros([len(nodes), INPUT_DIM], dtype=torch.float)
+                        flag = True
                         for i, sub_func_key in enumerate(nodes):
+                            if sub_func_key not in emb_lp_combine.keys():
+                                flag = False
+                                break
+                            if sub_func_key not in emb_ns.keys():
+                                flag = False
+                                break
+
                             x_lp_word_idx = emb_lp_combine[sub_func_key]['word_idx']
                             for j in range(len(x_lp_word_idx)):
                                 if j >= LP_PATH_NUM:
@@ -753,6 +825,8 @@ class MyLargeDataset(Dataset):
                             x_def[i] = torch.tensor(df_emb_def[func_index], dtype=torch.float)
                             x_ref[i] = torch.tensor(df_emb_ref[func_index], dtype=torch.float)
                             x_pdt[i] = torch.tensor(df_emb_pdt[func_index], dtype=torch.float)
+                        if not flag:
+                            continue
 
                         data = Data(num_nodes=x_ns.shape[0],
                                     edge_index=edge_index.t().contiguous(),
