@@ -36,8 +36,7 @@ import logging
 from pathlib import Path
 import json
 import argparse
-from sklearn.metrics import precision_score, recall_score, f1_score, accuracy_score
-
+from sklearn.metrics import precision_score, recall_score, f1_score, accuracy_score, confusion_matrix
 try:
    import cPickle as pickle
 except:
@@ -73,11 +72,13 @@ parser.add_argument('--tasks_file', help='tasks_file', type=str, default='cflow/
 parser.add_argument('--functions_path', help='functions_path', type=str, default=BASE_DIR + "/data/function2vec2/functions_jy")
 parser.add_argument('--embedding_path', help='embedding_path', type=str, default=BASE_DIR + "/data/function2vec2")
 parser.add_argument('--model_save_path', help='model_save_path', type=str, default=BASE_DIR + "/data/gcn_models")
+parser.add_argument('--best_model_path', help='model_save_path', type=str, default="")
 
 parser.add_argument('--input_dim', help='input_dim', type=int, default=128)
 parser.add_argument('--hidden_dim', help='hidden_dim', type=int, default=128)
 parser.add_argument('--batch_size', help='hidden_dim', type=int, default=16)
-parser.add_argument('--learning_rate', help='learning_rate', type=float, default=0.00001)
+parser.add_argument('--learning_rate', help='learning_rate', type=float, default=0.001)
+parser.add_argument('--epoch', help='epoch', type=int, default=100)
 
 parser.add_argument('--lp_path_num', help='lp_path_num', type=int, default=20)
 parser.add_argument('--lp_length', help='lp_length', type=int, default=60)
@@ -88,13 +89,14 @@ parser.add_argument('--ns_length', help='ns_length', type=int, default=2000)
 parser.add_argument('--ns_dim', help='ns_dim', type=int, default=128)
 parser.add_argument('--ns_w2v_path', help='ns_w2v_path', type=str, default=BASE_DIR + "/data/function2vec2/models/w2v_ns.bin")
 
-parser.add_argument('--log_msg', help='log_msg', type=str, default="PDT + F1-loss")
+parser.add_argument('--log_msg', help='log_msg', type=str, default="PDT + BCE-loss")
 args = parser.parse_args()
 
 logger.info("gcn parameters %s", args)
 
 EMBEDDING_PATH = args.embedding_path
 MODEL_SAVE_PATH = args.model_save_path
+BEST_MODEL_PATH = args.best_model_path
 Path(MODEL_SAVE_PATH).mkdir(parents=True, exist_ok=True)
 
 FUNCTIONS_PATH = args.functions_path
@@ -105,6 +107,7 @@ OUTPUT_DIM = 1
 HIDDEN_DIM = args.hidden_dim
 BATCH_SIZE = args.batch_size
 LEARNING_RATE = args.learning_rate
+EPOCH = args.epoch
 
 # 每一个 function 的 LP 可表示为 (LP_PATH_NUM, LP_LENGTH, LP_DIM)
 LP_PATH_NUM = args.lp_path_num
@@ -188,8 +191,8 @@ class GNNStack(nn.Module):
 
         # post-message-passing (PyTorch Geometric)
         self.post_mp = nn.Sequential(
-            # nn.Linear(hidden_dim, hidden_dim), nn.Dropout(0.25),
-            nn.Linear(hidden_dim, hidden_dim), # 去掉 dropout
+            nn.Linear(hidden_dim, hidden_dim), nn.Dropout(0.25),
+            # nn.Linear(hidden_dim, hidden_dim), # 去掉 dropout
             nn.Linear(hidden_dim, output_dim))
         if not (self.task == 'node' or self.task == 'graph'):
             raise RuntimeError('Unknown task.')
@@ -293,7 +296,7 @@ class GNNStack(nn.Module):
         if self.task == 'graph':
             x = pyg_nn.global_max_pool(x, batch)
 
-        x = F.relu( self.post_mp(x), inplace=True )
+        x = self.post_mp(x)
         # return emb, F.log_softmax(x, dim=1)  # dim (int): A dimension along which log_softmax will be computed.
         return emb, F.sigmoid(x)
 
@@ -303,23 +306,22 @@ class GNNStack(nn.Module):
         # return self.loss_layer(pred, label)
         pred = pred.view(pred.shape[0])
         label = label.type(torch.float)
+        return F.binary_cross_entropy(pred, label)
 
         # F1-loss: https://www.kaggle.com/c/human-protein-atlas-image-classification/discussion/77289
-        loss = 0
-        lack_cls = label.sum(dim=0) == 0
-        if lack_cls.any():
-            loss += F.binary_cross_entropy_with_logits(
-                label[:, lack_cls], label[:, lack_cls])
-        # predict = torch.sigmoid(pred)
-        predict = torch.clamp(pred * (1 - label), min=0.01) + pred * label
-        tp = predict * label
-        tp = tp.sum(dim=0)
-        precision = tp / (predict.sum(dim=0) + 1e-8)
-        recall = tp / (label.sum(dim=0) + 1e-8)
-        f1 = 2 * (precision * recall / (precision + recall + 1e-8))
-        return 1 - f1.mean() + loss
-
-        # return F.binary_cross_entropy(pred, label)
+        # loss = 0
+        # lack_cls = label.sum(dim=0) == 0
+        # if lack_cls.any():
+        #     loss += F.binary_cross_entropy_with_logits(
+        #         label[:, lack_cls], label[:, lack_cls])
+        # # predict = torch.sigmoid(pred)
+        # predict = torch.clamp(pred * (1 - label), min=0.01) + pred * label
+        # tp = predict * label
+        # tp = tp.sum(dim=0)
+        # precision = tp / (predict.sum(dim=0) + 1e-8)
+        # recall = tp / (label.sum(dim=0) + 1e-8)
+        # f1 = 2 * (precision * recall / (precision + recall + 1e-8))
+        # return 1 - f1.mean() + loss
 
 class CustomConv(pyg_nn.MessagePassing):
     def __init__(self, in_channels, out_channels):
@@ -389,16 +391,34 @@ def test(loader, model, is_validation=False):
     # return correct / total
     y_true = torch.cat(y_true)
     y_pred = torch.cat(y_pred)
+    tn, fp, fn, tp = confusion_matrix(y_true, y_pred).ravel()
     res = {
         "accuracy": accuracy_score(y_true, y_pred),
         "recall": recall_score(y_true, y_pred),
         "f1": f1_score(y_true, y_pred),
         "precision": precision_score(y_true, y_pred),
+        "tn": tn,
+        "fp": fp,
+        "fn": fn,
+        "tp": tp
     }
-    if res['f1'] < 0.01:
-        logger.info("y_true: {}".format(y_true))
-        logger.info("y_pred: {}".format(y_pred))
+    # if res['f1'] < 0.01:
+    #     logger.info("y_true: {}".format(y_true))
+    #     logger.info("y_pred: {}".format(y_pred))
     return res
+
+def print_result(phase, score, epoch = -1):
+    if phase in ['train', 'vali']:
+        myprint("Epoch {}, {}:\tAcc\tR\tP\tF1\tTN\tFP\tFN\tTP".format(epoch, phase), 1)
+        myprint("Epoch {}, {}:\t{:.4f}\t{:.4f}\t{:.4f}\t{:.4f}\t{}\t{}\t{}\t{}".format(epoch, phase,
+            score['accuracy'], score['recall'], score['precision'], score['f1'],
+            score['tn'], score['fp'], score['fn'], score['tp']), 1)
+    else:
+        myprint("{}:\tAcc\tR\tP\tF1\tTN\tFP\tFN\tTP".format(phase), 1)
+        myprint("{}:\t{:.4f}\t{:.4f}\t{:.4f}\t{:.4f}\t{}\t{}\t{}\t{}".format(phase,
+            score['accuracy'], score['recall'], score['precision'], score['f1'],
+            score['tn'], score['fp'], score['fn'], score['tp']), 1)
+
 
 def train(dataset, task, writer, plot=False, print_grad=False):
     if task == 'graph':
@@ -415,15 +435,6 @@ def train(dataset, task, writer, plot=False, print_grad=False):
         test_loader = DataLoader(dataset[int(data_size * 0.9):], batch_size=BATCH_SIZE, shuffle=True)
     else:
         test_loader = loader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=True)
-
-    # lp_path_num, lp_length, lp_dim, ns_length, ns_dim,
-    # lp_length = dataset[0].x_lp[0][0].shape[0]
-    # ns_length = dataset[0].x_ns[0].shape[0]
-    # logger.info("== lp_length: %d" % lp_length)
-    # logger.info("== ns_length: %d" % ns_length)
-    # print("== lp_length: %d" % lp_length)
-    # print("== ns_length: %d" % ns_length)
-
 
     # build model
     model = GNNStack(input_dim=INPUT_DIM,
@@ -448,15 +459,16 @@ def train(dataset, task, writer, plot=False, print_grad=False):
 
     print("len(model.convs):", len(model.convs))
 
-    # opt = optim.Adam(model.parameters(), lr=0.001)
-    opt = optim.SGD(model.parameters(), lr=LEARNING_RATE, momentum=0.9)
+    opt = optim.Adam(model.parameters(), lr=LEARNING_RATE, weight_decay=5e-4)
+    # opt = optim.SGD(model.parameters(), lr=LEARNING_RATE, momentum=0.9)
     min_valid_loss = np.inf
+    best_f1_score = -1
     best_model_path = ""
 
     train_accuracies, vali_accuracies = list(), list()
 
     # train
-    for epoch in range(100):
+    for epoch in range(EPOCH):
         logger.info("=== now epoch: %d" % epoch)
         total_loss = 0
         model.train()
@@ -475,27 +487,17 @@ def train(dataset, task, writer, plot=False, print_grad=False):
 
             # gpu_tracker.track()
 
-            # logger.info("# Allocated loss: %.3f GB" % round(torch.cuda.memory_allocated(0) / 1024 ** 3, 1))
-            # logger.info("# Cached    loss: %.3f GB" % round(torch.cuda.memory_reserved(0) / 1024 ** 3, 1))
-
             loss.backward() # 反向计算梯度，累加到之前梯度上
             opt.step() # 更新参数
             total_loss += loss.item() * batch.num_graphs
 
             # gpu_tracker.track()
 
-            # logger.info("# Allocated backward: %.3f GB" % round(torch.cuda.memory_allocated(0)/1024**3,1))
-            # logger.info("# Cached    backward: %.3f GB" % round(torch.cuda.memory_reserved(0)/1024**3,1))
-
             # delete caches
             del embedding, pred, loss
             # torch.cuda.empty_cache()
 
             # gpu_tracker.track()
-
-            # logger.info("# Allocated empty_cache: %.3f GB" % round(torch.cuda.memory_allocated(0) / 1024 ** 3, 1))
-            # logger.info("# Cached    empty_cache: %.3f GB" % round(torch.cuda.memory_reserved(0) / 1024 ** 3, 1))
-
 
         total_loss /= len(loader.dataset)
         writer.add_scalar("loss", total_loss, epoch)
@@ -514,20 +516,39 @@ def train(dataset, task, writer, plot=False, print_grad=False):
                 print("grad:")
                 print(para.grad)
 
-        if min_valid_loss > total_loss:
-            print(f'Training Loss Decreased({min_valid_loss:.6f}--->{total_loss:.6f}) \t Saving The Model')
-            logger.info(f'Training Loss Decreased({min_valid_loss:.6f}--->{total_loss:.6f}) \t Saving The Model')
+        if total_loss < min_valid_loss:
+            # Saving State Dict
+            # torch.save(model.state_dict(), MODEL_SAVE_PATH + "/gcn_model_epoch%d.pth" % epoch)
+            # best_model_path = MODEL_SAVE_PATH + "/gcn_model_epoch%d.pth" % epoch
+
+            print("Training Loss Decreased: {:.6f} --> {:.6f}.".format(min_valid_loss, total_loss))
+            logger.info("Training Loss Decreased: {:.6f} --> {:.6f}.".format(min_valid_loss, total_loss))
             min_valid_loss = total_loss
+
+        if vali_score['f1'] > best_f1_score:
             # Saving State Dict
             torch.save(model.state_dict(), MODEL_SAVE_PATH + "/gcn_model_epoch%d.pth" % epoch)
             best_model_path = MODEL_SAVE_PATH + "/gcn_model_epoch%d.pth" % epoch
 
-        myprint( "Epoch {}. Loss: {:.4f}. train_acc: {:.4f}. vali_acc: {:.4f}".format(
-            epoch, total_loss, train_score['accuracy'], vali_score['accuracy']), 1 )
-        myprint("Epoch {}. trai_recall: {:.4f}. trai_precision: {:.4f}. trai_f1: {:.4f}".format(
-            epoch, train_score['recall'], train_score['precision'], train_score['f1']), 1)
-        myprint("Epoch {}. vali_recall: {:.4f}. vali_precision: {:.4f}. vali_f1: {:.4f}".format(
-            epoch, vali_score['recall'], vali_score['precision'], vali_score['f1']), 1)
+            print("New best F1: {:.4f} --> {:.4f}. Saved model: {}".format(best_f1_score, vali_score['f1'], best_model_path))
+            logger.info("New best F1: {:.4f} --> {:.4f}. Saved model: {}".format(best_f1_score, vali_score['f1'], best_model_path))
+            best_f1_score = vali_score['f1']
+
+        print_result("train", train_score, epoch)
+        print_result("vali", vali_score, epoch)
+
+        """
+        myprint("Epoch {}. Loss : {:.4f}.".format(epoch, total_loss), 1 )
+        myprint("Epoch {}, Train:\tAcc\tR\tP\tF1\tTN\tFP\tFN\tTP".format(epoch), 1)
+        myprint("Epoch {}, Train:\t{:.4f}\t{:.4f}\t{:.4f}\t{:.4f}\t{}\t{}\t{}\t{}".format(epoch,
+            train_score['accuracy'], train_score['recall'], train_score['precision'], train_score['f1'],
+            train_score['tn'], train_score['fp'], train_score['fn'], train_score['tp']), 1)
+
+        myprint("Epoch {}, Vali:\tAcc\tR\tP\tF1\tTN\tFP\tFN\tTP".format(epoch), 1)
+        myprint("Epoch {}, Vali:\t{:.4f}\t{:.4f}\t{:.4f}\t{:.4f}\t{}\t{}\t{}\t{}".format(epoch,
+            vali_score['accuracy'], vali_score['recall'], vali_score['precision'], vali_score['f1'],
+            vali_score['tn'], vali_score['fp'], vali_score['fn'], vali_score['tp']), 1)
+        """
 
         writer.add_scalar("test_accuracy", vali_score['accuracy'], epoch)
 
@@ -537,10 +558,8 @@ def train(dataset, task, writer, plot=False, print_grad=False):
         myprint("loading the best model: %s" % best_model_path, 1)
         model.load_state_dict(torch.load(best_model_path))
         test_score = test(test_loader, model)
-        myprint("Test:", 1)
-        myprint("Accuracy\tRecall\tPrecision\tF1",1)
-        myprint("{:.4f}\t{:.4f}\t{:.4f}\t{:.4f}".format(
-            test_score['accuracy'],test_score['recall'],test_score['precision'],test_score['f1']),1)
+        print_result("test", test_score)
+
     if plot:
         plt.plot(train_accuracies, label="Train accuracy")
         plt.plot(vali_accuracies, label="Validation accuracy")
@@ -743,26 +762,6 @@ class MyLargeDataset(Dataset):
         with open(TASKS_FILE, 'r') as taskFile:
             taskDesc = json.load(taskFile)
 
-            # for local
-            finished_repos1 = ['nbd', 'libexpat', 'jabberd2', 'redis', 'ovs', 'picocom', 'libvips', 'libetpan',
-                               'libreport', 'neomutt',
-                               'libksba', 'miniupnp', 'imageworsener', 'mongo-c-driver', 'mapserver', 'nettle', 'rpm',
-                               'flatpak',
-                               'torque', 'yodl', 'netdata', 'FreeRDP', 'rsyslog', 'libsndfile', 'pgbouncer', 'pngquant',
-                               'lxc']
-
-            # for server
-            finished_repos = ['accountsservice', 'ghostpdl', 'aircrack-ng', 'atheme', 'axtls-8266', 'barebox',
-                              'beanstalkd', 'bfgminer', 'bitlbee', 'bubblewrap', 'busybox', 'bzrtp', 'capstone',
-                              'cherokee', 'cJSON', 'collectd', 'htcondor', 'conntrack-tools', 'corosync', 'yara',
-                              'das_watchdog', 'nbd', 'quagga', 'firejail', 'iperf', 'tpm2.0-tools', 'yodl', 'libXrandr',
-                              'virtio-winkvm', 'gimp', 'util-linux', 'nspluginwrapper', 'ettercap', 'libass', 'libgd',
-                              'jasper', 'varnish', 'bdwgc', 'postgres', 'musl', 'ngiflib', 'pdfresurrect', 'libreport',
-                              'libXfont', 'libevent', 'Espruino', 'ntp', 'libzip', 'rsyslog', 'shadowsocks-libev',
-                              'unrealircd', 'yubico-pam', 'libXi', 'mongo-c-driver']
-
-
-
             for repoName in taskDesc:
                 project_path = FUNCTIONS_PATH + "/" + repoName
 
@@ -872,5 +871,31 @@ if __name__ == '__main__':
     task = 'graph'
 
     dataset = MyLargeDataset(EMBEDDING_PATH)
-    model = train(dataset, task, writer, plot=False, print_grad=False)
-    logger.info("training GCN done.")
+    if BEST_MODEL_PATH == "":
+        logger.info("=== Train ===")
+        model = train(dataset, task, writer, plot=False, print_grad=False)
+    else:
+        logger.info("=== Test with the best model ===")
+        data_size = len(dataset)
+        test_loader = DataLoader(dataset[int(data_size * 0.9):], batch_size=BATCH_SIZE, shuffle=True)
+        model = GNNStack(input_dim=INPUT_DIM,
+                         hidden_dim=HIDDEN_DIM,
+                         output_dim=OUTPUT_DIM,
+                         lp_path_num=LP_PATH_NUM,
+                         lp_length=LP_LENGTH,
+                         lp_dim=LP_DIM,
+                         lp_w2v_path=LP_W2V_PATH,
+                         ns_length=NS_LENGTH,
+                         ns_dim=NS_DIM,
+                         ns_w2v_path=NS_W2V_PATH,
+                         task=task)
+        model.to(device)
+        model.load_state_dict(torch.load(BEST_MODEL_PATH))
+        test_score = test(test_loader, model)
+        myprint("Test:", 1)
+        myprint("Acc\tR\tP\tF1\tTN\tFP\tFN\tTP", 1)
+        myprint("{:.4f}\t{:.4f}\t{:.4f}\t{:.4f}\t{}\t{}\t{}\t{}".format(
+            test_score['accuracy'], test_score['recall'], test_score['precision'], test_score['f1'],
+            test_score['tn'], test_score['fp'], test_score['fn'], test_score['tp']), 1)
+
+    logger.info("GCN done.")
