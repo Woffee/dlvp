@@ -32,7 +32,7 @@ joern_path = "/opt/joern/"
 parser = argparse.ArgumentParser(description='Test for argparse')
 parser.add_argument('--cur_p', help='the No. of current progress', type=int, default=9)
 parser.add_argument('--tasks_file', help='tasks_file', type=str, default='cflow/tasks.json')
-parser.add_argument('--functions_path', help='functions_path', type=str, default='data/function2vec2/functions_jy')
+parser.add_argument('--functions_path', help='functions_path', type=str, default='/data/function2vec2/functions_jy')
 parser.add_argument('--save_path', help='functions_path', type=str, default = BASE_DIR + "/data/function2vec2")
 
 # parser.add_argument('--all_func_trees_json_file', help='all_func_trees_json_file', type=str,
@@ -134,6 +134,89 @@ def get_existed_trees_func_id(filename):
                     res.append(item['func_key'])
     return res
 
+# for jiahao's data
+def get_func(repo_name, cve_id, commit, vul, level, func_key, code, tree):
+    return {
+        'repo_name': repo_name,
+        'cve_id': cve_id,
+        'commit': commit,
+        'func_key': func_key,
+        'name': '',
+        'uniquename': func_key,
+        'vul': vul,
+        'level': level, # 0: current_function, 1: callee, 2: caller
+        'contents': code,
+        'kind': '',
+        'type': '',
+        'tree': tree,
+    }
+
+
+def jh_data_to_json(jh_data_file, to_file_entities, to_file_relations):
+    logger.info("running jh_data_to_json...")
+    df = pd.read_csv(jh_data_file)
+    df = df.fillna("")
+
+    total = len(df)
+
+    for index, row in df.iterrows():
+        if index % 1000 == 0:
+            logger.info("now: {} / {}".format(index, total))
+
+        func_key = "{}_{}_{}_{}".format(row['project'], row['CVE ID'], row['commit_id'], index)
+        print(func_key)
+        func = get_func(row['project'], row['CVE ID'], row['commit_id'], row['vul'], 0, func_key, row['code'],
+                        row['trees'])
+        with open(to_file_entities, "a") as fw:
+            fw.write(json.dumps(func) + "\n")
+
+        relations = []
+        if row['code_callee'] != "":
+            code_callees = row['code_callee'].split("-" * 50)
+            tree_callees = row['trees_callee'].split("-" * 50)
+            for ii, code in enumerate(code_callees):
+                if ii >= len(tree_callees):
+                    break
+
+                sub_func_key = func_key + "_callee_" + str(ii)
+                tree = tree_callees[ii]
+                sub_func = get_func(row['project'], row['CVE ID'], row['commit_id'], row['vul'], 1, sub_func_key, code,
+                                    tree)
+                with open(to_file_entities, "a") as fw:
+                    fw.write(json.dumps(sub_func) + "\n")
+
+                relations.append({
+                    "type": "call",
+                    "value": sub_func_key,
+                })
+
+        if row['code_caller'] != "":
+            code_callees = row['code_caller'].split("-" * 50)
+            tree_callees = row['trees_caller'].split("-" * 50)
+            for ii, code in enumerate(code_callees):
+                if ii >= len(tree_callees):
+                    break
+
+                sub_func_key = func_key + "_caller_" + str(ii)
+                tree = tree_callees[ii]
+                sub_func = get_func(row['project'], row['CVE ID'], row['commit_id'], row['vul'], -1, sub_func_key, code,
+                                    tree)
+                with open(to_file_entities, "a") as fw:
+                    fw.write(json.dumps(sub_func) + "\n")
+
+                relations.append({
+                    "type": "callby",
+                    "value": sub_func_key,
+                })
+
+        relation_json = {
+            func_key: relations
+        }
+        with open(to_file_relations, "a") as fw:
+            fw.write(json.dumps(relation_json) + "\n")
+    print("done")
+    logger.info("saved to: {}".format(to_file_entities))
+    logger.info("saved to: {}".format(to_file_relations))
 
 if __name__ == '__main__':
     tasks_file = args.tasks_file
@@ -141,18 +224,64 @@ if __name__ == '__main__':
 
     # 先每个 function 对应一个 json object，追加保存到到 all_func_trees_json_file，再合并到 all_func_trees_file。
     all_func_trees_json_file = SAVE_PATH + '/all_functions_with_trees.json'
-    all_func_trees_json_file_merged = SAVE_PATH + '/all_functions_with_trees_merged.json'
+    all_func_trees_json_file_merged = SAVE_PATH + '/all_functions_with_trees_merged_jh.json'
     all_func_trees_file = SAVE_PATH + '/all_functions_with_trees.csv'
 
     cur_p = int(args.cur_p)
 
-    SUB_SAVEPATH = BASE_DIR + "/data/function2vec2_%d" % cur_p
-    Path(SUB_SAVEPATH).mkdir(parents=True, exist_ok=True)
+
+    # 由于 Linux 还没有全部找完 caller callee，先把现有的生成到一个单独文件里
+    # linux_func_trees_json_file = SAVE_PATH + "/all_functions_with_trees_linux.json"
+    # if not os.path.exists(linux_func_trees_json_file):
+    #     cc = 0
+    #     with open(tasks_file, 'r') as taskFile:
+    #         taskDesc = json.load(taskFile)
+    #
+    #         for repoName in taskDesc:
+    #             if repoName != 'linux':
+    #                 continue
+    #             logger.info("now project: %s" % repoName)
+    #             project_path = os.path.join(functions_path, repoName)
+    #
+    #             for cve_id, non_vul_commits in taskDesc[repoName]['vuln'].items():
+    #                 logger.info("now cve_id: %s" % cve_id)
+    #
+    #                 entities_file = "%s/%s-entities.json" % (project_path, cve_id)
+    #                 cve_functions = read_functions(repoName, entities_file, non_vul_commits)
+    #
+    #                 for func in cve_functions:
+    #                     func['tree'] = generate_prolog(func['contents'])
+    #                     with open(linux_func_trees_json_file, "a") as fw:
+    #                         fw.write(json.dumps(func) + "\n")
+    #                         logger.info("saved: %s" % func['func_key'])
+    #                     cc += 1
+    #                     if cc % 1000 == 0:
+    #                         cmd = "rm /tmp/joern-default*"
+    #                         p = os.popen(cmd)
+    #                         x = p.read()
+    #     logger.info("sub progress %d done" % cur_p)
+    # exit()
+
+    # 把 jiahao 的数据集转换成 jy 的格式。
+    jh_data_file = "/data/jiahao_data/train_10425_val_3459_test_3452_im_test_9_15780_im_test_16_26826.csv"
+    jh_to_file_entitties = "/data/jiahao_data/jh_entities.json"
+    jh_to_file_relations = "/data/jiahao_data/jh_relations.json"
+    # jh_data_to_json(jh_data_file, jh_to_file_entitties, jh_to_file_relations)
+    # exit()
+
+    # 把 jiahao 的数据也 merge 到一起（一次性代码）
+    # logger.info("merge jiahao's data")
+    # with open(jh_to_file_entitties, "r") as f:
+    #     for line in f.readlines():
+    #         with open(all_func_trees_json_file_merged, "a") as fw:
+    #             fw.write(line.strip() + "\n")
+    # logger.info("saved to: {}".format(all_func_trees_json_file_merged))
+    # exit()
 
     if not os.path.exists(all_func_trees_json_file_merged):
         if cur_p < 9: # 用 9 来代替是否合并处理好的数据
             # get trees from code using Joern
-            all_func_trees_json_file_p = SUB_SAVEPATH + '/all_functions_with_trees.json'
+            all_func_trees_json_file_p = SAVE_PATH + "/all_functions_with_trees_%d.json" % cur_p
             existed = get_existed_trees_func_id(all_func_trees_json_file_p)
             cc = 0
 
