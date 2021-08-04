@@ -41,7 +41,7 @@ import pandas as pd
 from tqdm import tqdm
 import networkx as nx
 import logging
-
+from pathlib import Path
 
 # This cell might not be needed for you.
 # clang.cindex.Config.set_library_file(
@@ -410,7 +410,7 @@ def preprocess_all_for_graph2vec(csv_location, output_location, num_partitions=2
 
     return graph2vec_input_dir
 
-def preprocess_all_joern_for_graph2vec(input_file, output_location, graph_type, graph_type_next, num_partitions=20, PDT = False, Para_link = False):
+def preprocess_all_joern_for_graph2vec(input_file, func_keys_file, output_location, graph_type, graph_type_next, num_partitions=20, PDT = False, Para_link = False):
     """
     Given a data set (e.g. juliet.csv.zip or vdisc_*.czv.gz) loaded in
     as a pandas dataframe, it applies the graph2vec embedding to the
@@ -468,14 +468,28 @@ def preprocess_all_joern_for_graph2vec(input_file, output_location, graph_type, 
                     logging.info("Current Iteration: " + str(ii))
                     print("Current Iteration: " + str(ii))
                 func = json.loads(l)
+                if func['contents'].strip() == '' or func['tree'] == '':
+                    continue
 
                 res = process_joern_for_graph2vec2(func['tree'], func['contents'] ,graph_type,graph_type_next,PDT,Para_link )
-                with open(graph2vec_input_dir + str(ii) + ".json", 'w') as fw:
+                if res is None:
+                    continue
+
+                save_path = os.path.join(graph2vec_input_dir, str(ii // 1000))
+                Path(save_path).mkdir(parents=True, exist_ok=True)
+                to_file = os.path.join(save_path, '{}.json'.format(ii))
+
+                # 把每个 function 的 func_key 也存到一个文件里，和 embedding 一一对应
+                with open(func_keys_file, "a") as fw:
+                    fw.write(func['func_key'] + "\n")
+                with open(to_file, 'w') as fw:
                     fw.write(res)
+                if ii % 1000 == 0:
+                    logging.info("saved to: " + to_file)
                 ii += 1
 
     print("`-> Done.")
-    logging.info("`-> Done.")
+    logging.info("`-> Done. saved to: {}".format(func_keys_file))
 
     return graph2vec_input_dir
 
@@ -571,7 +585,8 @@ def get_edgelist_and_feature(string_graph,string_graph_type,code,string_graph_ty
             except Exception as e:
                 traceback.print_exc(file=sys.stdout)
                 print("reason", e)
-                continue
+                return None, None
+
     if PDT:
         try:
             G = nx.DiGraph()
@@ -627,6 +642,8 @@ def process_joern_for_graph2vec2(tree, contents, graph_type, graph_type_next=" "
     """
 
     edgelist, feature_json = get_edgelist_and_feature(tree, graph_type, contents, graph_type_next, PDT, Para_link)
+    if feature_json is None:
+        return None
 
     graph2vec_representation = {
         "edges": edgelist,
@@ -710,6 +727,7 @@ def preprocess_caller_and_callee_all_joern_for_graph2vec(csv_location, output_lo
 
 def run_graph2vec(input_dir, output_location, num_graph2vec_workers=1,num_epoch=1):
     print("Runs graph2vec on each of the above datapoints")
+    logging.info("Runs graph2vec on each of the above datapoints")
     subprocess.run([
         "python",
         "./src/graph2vec.py",
@@ -723,6 +741,7 @@ def run_graph2vec(input_dir, output_location, num_graph2vec_workers=1,num_epoch=
         output_location,
     ])
     print("`-> Done.")
+    logging.info("Runs graph2vec on each of the above datapoints done")
 
 
 if __name__=="__main__":

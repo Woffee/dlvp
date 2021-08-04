@@ -180,6 +180,10 @@ def jh_data_to_json(jh_data_file, to_file_entities, to_file_relations):
 
                 sub_func_key = func_key + "_callee_" + str(ii)
                 tree = tree_callees[ii]
+
+                if code.strip() == "" or tree.strip() == "":
+                    continue
+
                 sub_func = get_func(row['project'], row['CVE ID'], row['commit_id'], row['vul'], 1, sub_func_key, code,
                                     tree)
                 with open(to_file_entities, "a") as fw:
@@ -199,6 +203,10 @@ def jh_data_to_json(jh_data_file, to_file_entities, to_file_relations):
 
                 sub_func_key = func_key + "_caller_" + str(ii)
                 tree = tree_callees[ii]
+
+                if code.strip() == "" or tree.strip() == "":
+                    continue
+
                 sub_func = get_func(row['project'], row['CVE ID'], row['commit_id'], row['vul'], -1, sub_func_key, code,
                                     tree)
                 with open(to_file_entities, "a") as fw:
@@ -371,23 +379,26 @@ if __name__ == '__main__':
     # REF
     input_file = all_func_trees_json_file_merged
     to_embedding_file_ref = SAVE_PATH + "/all_func_embedding_ref.csv"
-    if not os.path.exists(to_embedding_file_ref):
+    func_keys_file = SAVE_PATH + "/all_func_embedding_ref_keys.txt"
+    if not os.path.exists(func_keys_file):
         print("running REF")
         logger.info("running REF")
         tmp_directory = tempfile.TemporaryDirectory()
-        graph2vec_input_dir = preprocess_code.preprocess_all_joern_for_graph2vec(input_file, tmp_directory.name, "REF",
+        func_keys_file = SAVE_PATH + "/all_func_embedding_ref_keys.txt"
+        graph2vec_input_dir = preprocess_code.preprocess_all_joern_for_graph2vec(input_file, func_keys_file, tmp_directory.name, "REF",
                                                                                  "CALL", num_partitions=10)
         output_file = to_embedding_file_ref
         preprocess_code.run_graph2vec(graph2vec_input_dir, output_file, num_graph2vec_workers=2, num_epoch=10)
-        logger.info("running REF done")
+        logger.info("running REF done, saved to: {}".format(output_file))
 
     # DEF
     to_embedding_file_def = SAVE_PATH + "/all_func_embedding_def.csv"
-    if not os.path.exists(to_embedding_file_def):
+    func_keys_file = SAVE_PATH + "/all_func_embedding_def_keys.txt"
+    if not os.path.exists(func_keys_file):
         print("running DEF")
         logger.info("running DEF")
         tmp_directory = tempfile.TemporaryDirectory()
-        graph2vec_input_dir = preprocess_code.preprocess_all_joern_for_graph2vec(input_file, tmp_directory.name, "REACHING_DEF",
+        graph2vec_input_dir = preprocess_code.preprocess_all_joern_for_graph2vec(input_file, func_keys_file, tmp_directory.name, "REACHING_DEF",
                                                                                  "EVAL_TYPE", num_partitions=10)
         output_file = to_embedding_file_def
         preprocess_code.run_graph2vec(graph2vec_input_dir, output_file, num_graph2vec_workers=2, num_epoch=10)
@@ -395,11 +406,12 @@ if __name__ == '__main__':
 
     # PDT
     to_embedding_file_pdt = SAVE_PATH + "/all_func_embedding_pdt.csv"
-    if not os.path.exists(to_embedding_file_pdt):
+    func_keys_file = SAVE_PATH + "/all_func_embedding_pdt_keys.txt"
+    if not os.path.exists(func_keys_file):
         print("running PDT")
         logger.info("running PDT")
         tmp_directory = tempfile.TemporaryDirectory()
-        graph2vec_input_dir = preprocess_code.preprocess_all_joern_for_graph2vec(input_file, tmp_directory.name,
+        graph2vec_input_dir = preprocess_code.preprocess_all_joern_for_graph2vec(input_file, func_keys_file, tmp_directory.name,
                                                                                  "CFG","REF", num_partitions=10, PDT=True)
         output_file = to_embedding_file_pdt
         preprocess_code.run_graph2vec(graph2vec_input_dir, output_file, num_graph2vec_workers=2, num_epoch=10)
@@ -408,22 +420,22 @@ if __name__ == '__main__':
 
     input_file = all_func_trees_json_file_merged
     # LP
-    Path(SAVE_PATH+"/models").mkdir(parents=True, exist_ok=True)
-    to_embedding_file_lp = SAVE_PATH + "/all_func_embedding_lp.pkl"
-    if not os.path.exists(to_embedding_file_lp + ".combine"):
-        print("running LP")
-        logger.info("running LP")
-        tmp_directory = tempfile.TemporaryDirectory()
-        all_functions_with_lp_file = SAVE_PATH + '/all_functions_with_trees_lp.json'
-        if not os.path.exists(all_functions_with_lp_file):
-            longpath.preprocess_longpath(input_file, all_functions_with_lp_file, "json")
-
-        logger.info("run_longpath()...")
-        output_file = to_embedding_file_lp
-        w2v_lp_model_file_combine = SAVE_PATH + "/models/w2v_lp_combine.bin"
-        w2v_lp_model_file_greedy = SAVE_PATH + "/models/w2v_lp_greedy.bin"
-        longpath.run_longpath(all_functions_with_lp_file, output_file, w2v_lp_model_file_combine, w2v_lp_model_file_greedy)
-        logger.info("running LP done")
+    # Path(SAVE_PATH+"/models").mkdir(parents=True, exist_ok=True)
+    # to_embedding_file_lp = SAVE_PATH + "/all_func_embedding_lp.pkl"
+    # if not os.path.exists(to_embedding_file_lp + ".combine"):
+    #     print("running LP")
+    #     logger.info("running LP")
+    #     tmp_directory = tempfile.TemporaryDirectory()
+    #     all_functions_with_lp_file = SAVE_PATH + '/all_functions_with_trees_lp.json'
+    #     if not os.path.exists(all_functions_with_lp_file):
+    #         longpath.preprocess_longpath(input_file, all_functions_with_lp_file, "json")
+    #
+    #     logger.info("run_longpath()...")
+    #     output_file = to_embedding_file_lp
+    #     w2v_lp_model_file_combine = SAVE_PATH + "/models/w2v_lp_combine.bin"
+    #     w2v_lp_model_file_greedy = SAVE_PATH + "/models/w2v_lp_greedy.bin"
+    #     longpath.run_longpath(all_functions_with_lp_file, output_file, w2v_lp_model_file_combine, w2v_lp_model_file_greedy)
+    #     logger.info("running LP done")
 
     # NS
     to_embedding_file_ns = SAVE_PATH + "/all_func_embedding_ns.pkl"

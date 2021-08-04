@@ -9,6 +9,7 @@ from tqdm import tqdm
 from joblib import Parallel, delayed
 from param_parser import parameter_parser
 from gensim.models.doc2vec import Doc2Vec, TaggedDocument
+import os
 
 class WeisfeilerLehmanMachine:
     """
@@ -101,13 +102,25 @@ def save_embedding(output_path, model, files, dimensions):
     out = out.sort_values(["type"])
     out.to_csv(output_path, index=None)
 
+def findAllFile(base, full=False):
+    for root, ds, fs in os.walk(base):
+        for f in fs:
+            if f.find("json") < 0:
+                continue
+            if full:
+                yield os.path.join(root, f)
+            else:
+                yield f
+
 def main(args):
     """
     Main function to read the graph list, extract features.
     Learn the embedding and save it.
     :param args: Object with the arguments.
     """
-    graphs = glob.glob(args.input_path + "*.json")
+    # graphs = glob.glob(args.input_path + "*.json")
+    graphs = list(findAllFile(args.input_path, True))
+
     print("\nFeature extraction started.\n")
     document_collections = Parallel(n_jobs=args.workers)(delayed(feature_extractor)(g, args.wl_iterations) for g in tqdm(graphs))
     print("\nOptimization started.\n")
