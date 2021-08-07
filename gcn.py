@@ -653,7 +653,10 @@ def read_relation_file(relation_file, deleted):
                 else:
                     relations_callby[k] = [v['value']]
             elif v['type'] == 'define':
-                if v['value'] not in lv0_functions and v['value'] not in deleted:
+                if v['value'] in deleted:
+                    logger.info("lv0_function no LP or NS: {}".format(v['value']))
+                    continue
+                if v['value'] not in lv0_functions:
                     lv0_functions.append(v['value'])
     print("len(lv0_functions):", len(lv0_functions))
 
@@ -670,6 +673,73 @@ def read_relation_file(relation_file, deleted):
         }
     return res
 
+
+def read_jh_relation_file(entities_file, relation_file, deleted):
+    res = {}
+
+    # read relations
+    relations_call = {}
+    relations_callby = {}
+
+    json_str = ""
+    if not os.path.exists(relation_file):
+        return res
+
+    lv0_functions = []
+    with open(entities_file) as f:
+        for line in f.readlines():
+            l = line.strip()
+            if l=="":
+                continue
+            obj = json.loads(l)
+            if obj['level'] == 0 and obj['vul'] == 1:
+                lv0_functions.append(obj['func_key'])
+
+    with open(relation_file) as f:
+        for line in f.readlines():
+            l = line.strip()
+            if l == "":
+                continue
+            obj = json.loads(l)
+            for k, arr in obj.items():
+                for v in arr:
+                    if v['type'] == 'call':
+                        if k in relations_call.keys():
+                            relations_call[k].append(v['value'])
+                        else:
+                            relations_call[k] = [v['value']]
+                    elif v['type'] == 'callby':
+                        if k in relations_callby.keys():
+                            relations_callby[k].append(v['value'])
+                        else:
+                            relations_callby[k] = [v['value']]
+
+    print("len(lv0_functions):", len(lv0_functions))
+    logger.info("len(lv0_functions): {}".format(len(lv0_functions)))
+
+    for func in lv0_functions:
+        nodes = []
+        edge_index = []
+        edge_weight = []
+
+        nodes, edge_index, edge_weight = find_edges(func, relations_call, relations_callby, deleted, 0, "all", [], [], [])
+        res[func] = {
+            "nodes": nodes,
+            "edge_index": edge_index,
+            "edge_weight": edge_weight
+        }
+    return res
+
+def read_keys(keys_file):
+    keys_index = {}
+    ii = 0
+    with open(keys_file, "r") as f:
+        for line in f.readlines():
+            l = line.strip()
+            if l != "":
+                keys_index[l] = ii
+                ii += 1
+    return keys_index
 
 class MyLargeDataset(Dataset):
     def __init__(self, root="", transform=None, pre_transform=None):
@@ -700,11 +770,14 @@ class MyLargeDataset(Dataset):
 
     def process(self):
 
-        all_func_trees_json_file_merged = EMBEDDING_PATH + '/all_functions_with_trees_merged.json'
+        all_func_trees_json_file_merged = EMBEDDING_PATH + '/all_functions_with_trees_merged_jh.json'
 
         emb_file_def = EMBEDDING_PATH + "/all_func_embedding_def.csv"
+        emb_file_def_keys = EMBEDDING_PATH + "/all_func_embedding_def_keys.txt"
         emb_file_ref = EMBEDDING_PATH + "/all_func_embedding_ref.csv"
+        emb_file_ref_keys = EMBEDDING_PATH + "/all_func_embedding_ref_keys.txt"
         emb_file_pdt = EMBEDDING_PATH + "/all_func_embedding_pdt.csv"
+        emb_file_pdt_keys = EMBEDDING_PATH + "/all_func_embedding_pdt_keys.txt"
 
         emb_file_lp_combine = EMBEDDING_PATH + "/all_func_embedding_lp.pkl.combine"
         emb_file_lp_greedy = EMBEDDING_PATH + "/all_func_embedding_lp.pkl.greedy"
@@ -713,11 +786,14 @@ class MyLargeDataset(Dataset):
 
         # read files
         df_emb_def = pd.read_csv(emb_file_def).drop(columns=['type']).values
+        keys_index_def = read_keys(emb_file_def_keys)
         df_emb_ref = pd.read_csv(emb_file_ref).drop(columns=['type']).values
+        keys_index_ref = read_keys(emb_file_ref_keys)
         df_emb_pdt = pd.read_csv(emb_file_pdt).drop(columns=['type']).values
+        keys_index_pdt = read_keys(emb_file_pdt_keys)
 
-        emb_lp_combine = pickle.load(open(emb_file_lp_combine, "rb"))
-        emb_lp_greedy = pickle.load(open(emb_file_lp_greedy, "rb"))
+        # emb_lp_combine = pickle.load(open(emb_file_lp_combine, "rb"))
+        # emb_lp_greedy = pickle.load(open(emb_file_lp_greedy, "rb"))
 
         emb_ns = pickle.load(open(emb_file_ns, "rb"))
 
@@ -725,15 +801,15 @@ class MyLargeDataset(Dataset):
         print("len(df_emb_ref):", len(df_emb_ref))
         print("len(df_emb_pdt):", len(df_emb_pdt))
 
-        print("len(emb_lp_combine):", len(emb_lp_combine))
-        print("len(emb_lp_greedy):", len(emb_lp_greedy))
+        # print("len(emb_lp_combine):", len(emb_lp_combine))
+        # print("len(emb_lp_greedy):", len(emb_lp_greedy))
         print("len(emb_ns):", len(emb_ns))
 
 
 
         # 有些 function 无法生成 LP 和 NS，抛弃掉
         deleted = []
-        func2index = {}
+        # func2index = {}
 
         ii = 0
         with open(all_func_trees_json_file_merged, "r") as fr:
@@ -744,8 +820,8 @@ class MyLargeDataset(Dataset):
                 func = json.loads(l)
 
                 func_key = func['func_key']
-                func2index[func_key] = ii
-                if not (func_key in emb_lp_combine.keys() and func_key in emb_ns.keys()):
+                # func2index[func_key] = ii
+                if not (func_key in func_key in emb_ns.keys() and func_key in keys_index_def and func_key in keys_index_ref and func_key in keys_index_pdt):
                     deleted.append(func_key)
                 ii += 1
 
@@ -788,8 +864,8 @@ class MyLargeDataset(Dataset):
                         nodes_num = len(nodes)
                         edges_num = len(edge_index)
 
-                        x_lp = torch.zeros([len(nodes), LP_PATH_NUM, LP_LENGTH], dtype=torch.long)
-                        x_lp_length = torch.zeros([len(nodes), LP_PATH_NUM], dtype=torch.long)
+                        # x_lp = torch.zeros([len(nodes), LP_PATH_NUM, LP_LENGTH], dtype=torch.long)
+                        # x_lp_length = torch.zeros([len(nodes), LP_PATH_NUM], dtype=torch.long)
 
 
                         x_ns = torch.zeros([len(nodes), NS_LENGTH], dtype=torch.long)
@@ -801,29 +877,38 @@ class MyLargeDataset(Dataset):
                         x_pdt = torch.zeros([len(nodes), INPUT_DIM], dtype=torch.float)
                         flag = True
                         for i, sub_func_key in enumerate(nodes):
-                            if sub_func_key not in emb_lp_combine.keys():
-                                flag = False
-                                break
+                            # if sub_func_key not in emb_lp_combine.keys():
+                            #     flag = False
+                            #     break
                             if sub_func_key not in emb_ns.keys():
                                 flag = False
                                 break
+                            if sub_func_key not in keys_index_def.keys():
+                                flag = False
+                                break
+                            if sub_func_key not in keys_index_ref.keys():
+                                flag = False
+                                break
+                            if sub_func_key not in keys_index_pdt.keys():
+                                flag = False
+                                break
 
-                            x_lp_word_idx = emb_lp_combine[sub_func_key]['word_idx']
-                            for j in range(len(x_lp_word_idx)):
-                                if j >= LP_PATH_NUM:
-                                    break
-                                for k in range(LP_LENGTH):
-                                    x_lp[i][j][k] = torch.tensor(x_lp_word_idx[j][k], dtype=torch.long)
-                                    x_lp_length[i][j] = max(emb_lp_combine[sub_func_key]['path_length'][j], 1)
+                            # x_lp_word_idx = emb_lp_combine[sub_func_key]['word_idx']
+                            # for j in range(len(x_lp_word_idx)):
+                            #     if j >= LP_PATH_NUM:
+                            #         break
+                            #     for k in range(LP_LENGTH):
+                            #         x_lp[i][j][k] = torch.tensor(x_lp_word_idx[j][k], dtype=torch.long)
+                            #         x_lp_length[i][j] = max(emb_lp_combine[sub_func_key]['path_length'][j], 1)
 
 
                             x_ns[i] = torch.tensor(emb_ns[sub_func_key]['word_idx'], dtype=torch.long)
                             x_ns_length[i] = max(emb_ns[sub_func_key]['ns_length'], 1)
 
-                            func_index = func2index[sub_func_key]
-                            x_def[i] = torch.tensor(df_emb_def[func_index], dtype=torch.float)
-                            x_ref[i] = torch.tensor(df_emb_ref[func_index], dtype=torch.float)
-                            x_pdt[i] = torch.tensor(df_emb_pdt[func_index], dtype=torch.float)
+                            # func_index = func2index[sub_func_key]
+                            x_def[i] = torch.tensor(df_emb_def[keys_index_def[sub_func_key]], dtype=torch.float)
+                            x_ref[i] = torch.tensor(df_emb_ref[keys_index_ref[sub_func_key]], dtype=torch.float)
+                            x_pdt[i] = torch.tensor(df_emb_pdt[keys_index_pdt[sub_func_key]], dtype=torch.float)
                         if not flag:
                             continue
 
@@ -834,8 +919,8 @@ class MyLargeDataset(Dataset):
                                     x_def=x_def,
                                     x_ref=x_ref,
                                     x_pdt=x_pdt,
-                                    x_lp=x_lp,
-                                    x_lp_length = x_lp_length,
+                                    # x_lp=x_lp,
+                                    # x_lp_length = x_lp_length,
                                     x_ns=x_ns,
                                     x_ns_length = x_ns_length
                                     )
@@ -855,7 +940,104 @@ class MyLargeDataset(Dataset):
                         ii += 1
 
 
+        # Read jiahao's data
+        logger.info("Read jiahao's data")
+        JIAHAO_DATA_PATH = "/data/jiahao_data"
+        jh_entities_file = JIAHAO_DATA_PATH + "/jh_entities.json"
+        jh_relations_file = JIAHAO_DATA_PATH + "/jh_relations.json"
+        funcs = read_jh_relation_file(jh_entities_file, jh_relations_file, deleted)
+        for func_key, attr in funcs.items():
+            nodes, edge_index, edge_weight = attr['nodes'], attr['edge_index'], attr['edge_weight']
+            if len(edge_index) == 0:
+                logger.info("=== edge_index is empty: {}".format(func_key))
+                continue
 
+            edge_weight = torch.tensor(edge_weight, dtype=torch.float)
+            edge_index = torch.tensor(edge_index, dtype=torch.long)
+            if edge_index.shape[0] > 0:
+                edge_index = edge_index - edge_index.min()
+
+            commit = func_key[:40]
+            y = 1
+            nodes_num = len(nodes)
+            edges_num = len(edge_index)
+
+            # x_lp = torch.zeros([len(nodes), LP_PATH_NUM, LP_LENGTH], dtype=torch.long)
+            # x_lp_length = torch.zeros([len(nodes), LP_PATH_NUM], dtype=torch.long)
+
+            x_ns = torch.zeros([len(nodes), NS_LENGTH], dtype=torch.long)
+            x_ns_length = torch.zeros(len(nodes), dtype=torch.long)
+
+            x_def = torch.zeros([len(nodes), INPUT_DIM], dtype=torch.float)
+            x_ref = torch.zeros([len(nodes), INPUT_DIM], dtype=torch.float)
+            x_pdt = torch.zeros([len(nodes), INPUT_DIM], dtype=torch.float)
+            flag = True
+            for i, sub_func_key in enumerate(nodes):
+                # if sub_func_key not in emb_lp_combine.keys():
+                #     flag = False
+                #     break
+                if sub_func_key not in emb_ns.keys():
+                    logger.info("=== no emb_ns key: {}".format(func_key))
+                    flag = False
+                    break
+                if sub_func_key not in keys_index_def.keys():
+                    logger.info("=== no keys_index_def key: {}".format(func_key))
+                    flag = False
+                    break
+                if sub_func_key not in keys_index_ref.keys():
+                    logger.info("=== no keys_index_ref key: {}".format(func_key))
+                    flag = False
+                    break
+                if sub_func_key not in keys_index_pdt.keys():
+                    logger.info("=== no keys_index_pdt key: {}".format(func_key))
+                    flag = False
+                    break
+
+                # x_lp_word_idx = emb_lp_combine[sub_func_key]['word_idx']
+                # for j in range(len(x_lp_word_idx)):
+                #     if j >= LP_PATH_NUM:
+                #         break
+                #     for k in range(LP_LENGTH):
+                #         x_lp[i][j][k] = torch.tensor(x_lp_word_idx[j][k], dtype=torch.long)
+                #         x_lp_length[i][j] = max(emb_lp_combine[sub_func_key]['path_length'][j], 1)
+
+                x_ns[i] = torch.tensor(emb_ns[sub_func_key]['word_idx'], dtype=torch.long)
+                x_ns_length[i] = max(emb_ns[sub_func_key]['ns_length'], 1)
+
+                # func_index = func2index[sub_func_key]
+                x_def[i] = torch.tensor(df_emb_def[keys_index_def[sub_func_key]], dtype=torch.float)
+                x_ref[i] = torch.tensor(df_emb_ref[keys_index_ref[sub_func_key]], dtype=torch.float)
+                x_pdt[i] = torch.tensor(df_emb_pdt[keys_index_pdt[sub_func_key]], dtype=torch.float)
+            if not flag:
+                continue
+
+            data = Data(num_nodes=x_ns.shape[0],
+                        edge_index=edge_index.t().contiguous(),
+                        edge_weight=edge_weight,
+                        y=y,
+                        x_def=x_def,
+                        x_ref=x_ref,
+                        x_pdt=x_pdt,
+                        # x_lp=x_lp,
+                        # x_lp_length = x_lp_length,
+                        x_ns=x_ns,
+                        x_ns_length=x_ns_length
+                        )
+
+            # if self.pre_filter is not None and not self.pre_filter(data):
+            #    continue
+
+            # if self.pre_transform is not None:
+            #    data = self.pre_transform(data)
+            save_path = os.path.join(self.processed_dir, str(ii // 1000))
+            Path(save_path).mkdir(parents=True, exist_ok=True)
+
+            to_file = os.path.join(save_path, 'data_{}.pt'.format(ii))
+            torch.save(data, to_file)
+            print("saved to: %s, vul: %d,nodes_num: %d, edges_num: %d" % (to_file, y, nodes_num, edges_num))
+            logger.info(
+                "saved to: %s, vul: %d, nodes_num: %d, edges_num: %d" % (to_file, y, nodes_num, edges_num))
+            ii += 1
 
     def len(self):
         return len(self.processed_file_names)
@@ -866,11 +1048,35 @@ class MyLargeDataset(Dataset):
         return data
 
 if __name__ == '__main__':
+    # 统计共有多少个 Graphs
+    # ii = 0
+    # all_graphs_count = 0
+    # with open(TASKS_FILE, 'r') as taskFile:
+    #     taskDesc = json.load(taskFile)
+    #
+    #     for repoName in taskDesc:
+    #         project_path = FUNCTIONS_PATH + "/" + repoName
+    #
+    #         for cve_id, non_vul_commits in taskDesc[repoName]['vuln'].items():
+    #             print(cve_id)
+    #             relation_file = "%s/%s-relation.json" % (project_path, cve_id)
+    #             if not os.path.exists(relation_file):
+    #                 logger.info("file not existed: %s" % relation_file)
+    #                 continue
+    #
+    #             funcs = read_relation_file(relation_file,[])
+    #             all_graphs_count += len(funcs)
+    # logger.info("all_graphs_count: {}".format(all_graphs_count))
+    # exit()
+
+
     writer = SummaryWriter("./log/" + datetime.now().strftime("%Y%m%d-%H%M%S"))
 
     task = 'graph'
 
-    dataset = MyLargeDataset(EMBEDDING_PATH)
+    dataset_savepath = EMBEDDING_PATH + "/gcn_dataset"
+    Path(dataset_savepath).mkdir(parents=True, exist_ok=True)
+    dataset = MyLargeDataset(dataset_savepath)
     if BEST_MODEL_PATH == "":
         logger.info("=== Train ===")
         model = train(dataset, task, writer, plot=False, print_grad=False)
