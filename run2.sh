@@ -13,12 +13,11 @@
 #--all_func_trees_file data/function2vec2/all_functions_with_trees.csv
 
 # Run GCN
-python gcn.py --tasks_file /data/function2vec3/tasks.json \
+python gcn2.py --tasks_file /data/function2vec3/tasks.json \
   --functions_path /data/function2vec3/functions_jy \
   --embedding_path /data/function2vec4 \
-  --model_save_path /data/gcn_models_p1 \
+  --model_save_path /data/gcn_models_p2 \
   --learning_rate 0.0001 \
-  --epoch 200 \
   --input_dim 128 \
   --hidden_dim 128 \
   --batch_size 16 \
