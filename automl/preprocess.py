@@ -24,6 +24,9 @@ from datetime import datetime
 import networkx as nx
 import numpy as np
 
+from stellargraph.data import BiasedRandomWalk
+from stellargraph import StellarGraph
+from gensim.models import Word2Vec
 
 import matplotlib.pyplot as plt
 import pandas as pd
@@ -39,6 +42,7 @@ try:
 except:
     import pickle
 
+from node2vec import Node2vec
 
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -379,7 +383,7 @@ def log_stats(graphs, only_vul = False):
         logger.info("Unique_Funcs: {}".format(unique))
 
 
-def process():
+def read_graphs():
     all_func_trees_json_file_merged = EMBEDDING_PATH + '/all_functions_with_trees_merged_jh.json'
 
     # read jy's data
@@ -414,9 +418,18 @@ def process():
         graphs = graphs + get_graphs(funcs)
 
     # 统计数据集
-    log_stats(graphs, only_vul=True)
-    log_stats(graphs)
+    # log_stats(graphs, only_vul=True)
+    # log_stats(graphs)
+
+    return graphs
 
 
 if __name__ == '__main__':
-    process()
+
+    # Node2vec
+    graphs = read_graphs()
+    n2v = Node2vec(EMBEDDING_PATH)
+    n2v.train(graphs)
+    n2v.save_embeddings(graphs)
+    embeddings = n2v.load_embeddings()
+
