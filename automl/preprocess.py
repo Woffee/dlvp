@@ -374,13 +374,13 @@ def log_stats(graphs, only_vul = False):
 
                 unique += row['Unique_Funcs']
 
-        logger.info("all vul functions: {}".format(all_vul_functions))
-        logger.info("lv_0: {}".format(lv_0))
-        logger.info("lv_1: {}".format(lv_1))
-        logger.info("lv_n1: {}".format(lv_n1))
-        logger.info("lv_2: {}".format(lv_2))
-        logger.info("lv_n2: {}".format(lv_n2))
-        logger.info("Unique_Funcs: {}".format(unique))
+        logger.info("=== all vul functions: {}".format(all_vul_functions))
+        logger.info("=== lv_0: {}".format(lv_0))
+        logger.info("=== lv_1: {}".format(lv_1))
+        logger.info("=== lv_n1: {}".format(lv_n1))
+        logger.info("=== lv_2: {}".format(lv_2))
+        logger.info("=== lv_n2: {}".format(lv_n2))
+        logger.info("=== Unique_Funcs: {}".format(unique))
 
 
 def read_graphs():
@@ -394,6 +394,8 @@ def read_graphs():
         taskDesc = json.load(taskFile)
 
         for repoName in taskDesc:
+            if repoName == "linux":
+                continue
             finished_repos.append(repoName)
             project_path = FUNCTIONS_PATH + "/" + repoName
 
@@ -418,16 +420,24 @@ def read_graphs():
         graphs = graphs + get_graphs(funcs)
 
     # 统计数据集
-    # log_stats(graphs, only_vul=True)
-    # log_stats(graphs)
+    log_stats(graphs, only_vul=True)
+    log_stats(graphs)
 
     return graphs
 
 
 if __name__ == '__main__':
+    to_file_graphs = EMBEDDING_PATH + "/graphs.pkl"
+    if os.path.exists(to_file_graphs):
+        logger.info("loading graphs from: {}".format(to_file_graphs))
+        with open(to_file_graphs, 'rb') as fh:
+            graphs = pickle.load(fh)
+    else:
+        graphs = read_graphs()
+        pickle.dump(graphs, open(to_file_graphs, "wb"))
+        logger.info("saved to: {}".format(to_file_graphs))
 
     # Node2vec
-    graphs = read_graphs()
     n2v = Node2vec(EMBEDDING_PATH)
     n2v.train(graphs)
     n2v.save_embeddings(graphs)
