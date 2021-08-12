@@ -51,11 +51,13 @@ parser.add_argument('--entities_file', help='entities_file', type=str, default='
 parser.add_argument('--tasks_file', help='tasks_file', type=str, default=BASE_DIR + '/../cflow/tasks.json')
 parser.add_argument('--functions_path', help='functions_path', type=str, default=BASE_DIR + "/../data/function2vec2/functions_jy")
 parser.add_argument('--save_path', help='save_path', type=str, default=BASE_DIR + '/data')
+parser.add_argument('--data_type', help='data_type', type=str, default='training')
 
 args = parser.parse_args()
 logger.info("treecaps/prepare_data parameters %s", args)
 
-SAVE_PATH = args.save_path
+DATA_TYPE = args.data_type
+SAVE_PATH = args.save_path + '/' + args.data_type
 Path(SAVE_PATH).mkdir(parents=True, exist_ok=True)
 
 ENTITIES_FILE = args.entities_file
@@ -163,13 +165,13 @@ def generate_edgelist(ast_root):
 
     return edges
 
-def generate_ast_tree(ast_root, label):
+def generate_ast_tree(func_key, ast_root, label):
 
 
     def walk_tree_and_add_edges(node):
-        node_type = str(node.kind)
+        node_type = str(node.kind).replace("CursorKind.", "")
 
-        if node.kind not in all_node_types:
+        if node_type not in all_node_types:
             all_node_types.append( node_type )
         node_id = str( all_node_types.index( node_type ) )
         cur_node = {
@@ -182,6 +184,7 @@ def generate_ast_tree(ast_root, label):
         return cur_node
 
     return {
+        'func_key': func_key,
         'tree': walk_tree_and_add_edges(ast_root),
         'label': label
     }
@@ -244,7 +247,7 @@ def test():
     print(nodes)
 
     # tree for treecaps
-    ast_tree = generate_ast_tree(ast_root, '1')
+    ast_tree = generate_ast_tree("", ast_root, '1')
     print("=== ast_tree:")
     print(ast_tree)
 
@@ -440,19 +443,24 @@ def read_jh_relation_file(entities_file, relation_file, deleted):
 
 if __name__ == '__main__':
     # test()
-
+    logger.info("running DATA_TYPE: {}".format(DATA_TYPE))
     deleted = []
     funcs_cnt = 0
-    ii = 0
+    ii = -1
     with open(TASKS_FILE, 'r') as taskFile:
         taskDesc = json.load(taskFile)
 
         top10 = ['FFmpeg','qemu','openssl','tcpdump','php-src','kerberos_5','jasper','librsvg','freetype','radare2']
         for repoName in taskDesc:
-            if repoName not in top10:
-                continue
+            ii += 1
 
-            i_repo = top10.index(repoName)
+            if DATA_TYPE == 'training' and repoName not in top10:
+                continue
+            if DATA_TYPE == 'training':
+                i_repo = top10.index(repoName)
+            else:
+                i_repo = str(ii)
+
             print("now: {}".format(repoName))
             logger.info("now: {}".format(repoName))
 
@@ -473,23 +481,32 @@ if __name__ == '__main__':
                 if not os.path.exists(relation_file):
                     logger.info("file not existed: %s" % relation_file)
                     continue
+                if not os.path.exists(entities_file):
+                    logger.info("file not existed: %s" % entities_file)
+                    continue
 
                 cve_functions = read_functions(repoName, entities_file, non_vul_commits)
-                lv0_functions = read_lv0_functions(relation_file, deleted)
 
-                for func in cve_functions:
-                    if func['func_key'] not in lv0_functions:
-                        continue
-                    logger.info("func_key: {}".format(func['func_key']))
-
-                    ast_root = generate_ast_roots( func['contents'] )
-                    trees.append( generate_ast_tree(ast_root, str(i_repo)) )
+                if DATA_TYPE == 'training':
+                    lv0_functions = read_lv0_functions(relation_file, deleted)
+                    for func in cve_functions:
+                        if func['func_key'] not in lv0_functions:
+                            continue
+                        logger.info("func_key: {}".format(func['func_key']))
+                        ast_root = generate_ast_roots( func['contents'] )
+                        trees.append( generate_ast_tree(func['func_key'], ast_root, str(i_repo)) )
+                else:
+                    for func in cve_functions:
+                        logger.info("func_key: {}".format(func['func_key']))
+                        ast_root = generate_ast_roots(func['contents'])
+                        trees.append(generate_ast_tree(func['func_key'], ast_root, str(i_repo)))
 
 
             funcs_cnt += len(trees)
             with open(to_file_trees, 'wb') as file_handler:
                 pickle.dump(trees, file_handler, protocol=pickle.HIGHEST_PROTOCOL)
             logger.info("saved to {}, len(trees): {}".format(to_file_trees, len(trees)))
+
 
     node_type_lookup = {}
     to_file_node_type = SAVE_PATH + "/node_type_lookup.pkl"
