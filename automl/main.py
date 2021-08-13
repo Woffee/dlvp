@@ -30,7 +30,6 @@ from tensorboardX import SummaryWriter
 import matplotlib.pyplot as plt
 import pandas as pd
 import os
-from gpu_mem_track import MemTracker
 
 import logging
 from pathlib import Path
@@ -42,8 +41,8 @@ try:
 except:
    import pickle
 
-import nni
-from nni.utils import merge_parameter
+# import nni
+# from nni.utils import merge_parameter
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -53,7 +52,7 @@ now_time = time.strftime("%Y-%m-%d_%H-%M", time.localtime())
 logging.basicConfig(level=logging.INFO,
                     format='%(asctime)s %(levelname)s %(filename)s line: %(lineno)s - %(message)s',
                     datefmt='%Y-%m-%d %H:%M:%S',
-                    filename=BASE_DIR + '/logs/' + now_time + '_gcn.log')
+                    filename=BASE_DIR + '/../logs/' + now_time + '_automl.log')
 logger = logging.getLogger(__name__)
 
 # setting device on GPU if available, else CPU
@@ -120,7 +119,7 @@ def myprint(s, is_log=0):
 class GNNStack(nn.Module):
 
     def __init__(self, input_dim, hidden_dim, output_dim, lp_path_num, lp_length, lp_dim, lp_w2v_path, ns_length,
-                 ns_dim, ns_w2v_path):
+                 ns_dim, ns_w2v_path, batch_size):
         """
         :param input_dim: max(dataset.num_node_features, 1)
         :param hidden_dim: 128
@@ -132,6 +131,7 @@ class GNNStack(nn.Module):
         self.input_dim = input_dim
         self.hidden_dim = hidden_dim
         self.output_dim = output_dim
+        self.batch_size = batch_size
 
         # self.lp_path_num = lp_path_num
         # self.lp_length = lp_length
@@ -150,10 +150,11 @@ class GNNStack(nn.Module):
         # self.ns_gru = nn.GRU(ns_dim, lp_dim, 1, batch_first=True)
 
         # 1. concatenate 5 embeddings
-        # self.all_fc1 = nn.Linear(input_dim * 3, input_dim * 2)
-        # self.bn1 = nn.BatchNorm1d(num_features = input_dim * 2)
+        self.all_fc1 = nn.Linear(input_dim * 3, hidden_dim)
+        self.hid = nn.Linear(hidden_dim, hidden_dim)
+        self.bn1 = nn.BatchNorm1d(num_features = hidden_dim)
         #
-        # self.all_fc2 = nn.Linear(input_dim * 2, input_dim)
+        self.all_fc2 = nn.Linear(hidden_dim, output_dim)
         # self.bn2 = nn.BatchNorm1d(num_features=input_dim)
 
         # or 2.soft weights
@@ -163,12 +164,17 @@ class GNNStack(nn.Module):
         self.w_lp = torch.nn.Parameter(torch.Tensor([1.0]))
         self.w_ns = torch.nn.Parameter(torch.Tensor([1.0]))
 
+        self.lns = nn.ModuleList()
+        self.lns.append(nn.LayerNorm(hidden_dim))
+        self.lns.append(nn.LayerNorm(hidden_dim))
 
         # post-message-passing (PyTorch Geometric)
         self.post_mp = nn.Sequential(
-            nn.Linear(input_dim, hidden_dim), nn.Dropout(0.25),
+            nn.Linear(hidden_dim, hidden_dim), nn.Dropout(0.25),
+            # nn.Linear(hidden_dim, hidden_dim), # 去掉 dropout
             nn.Linear(hidden_dim, output_dim))
 
+        self.num_layers = 3
         self.loss_layer = nn.CrossEntropyLoss()
 
 
@@ -178,14 +184,29 @@ class GNNStack(nn.Module):
         # DEF, REF, PDT, LP, NS --> x
         # idx_lp, idx_ns, x_ref, x_def, x_pdt = data.x_lp, data.x_ns, data.x_ref, data.x_def, data.x_pdt
 
-        x = data.x_pdt
+        x_pdt, x_def, x_ref , batch = data.x_pdt, data.x_def, data.x_ref, data.batch
+
+        x_pdt = x_pdt.view( -1, self.input_dim )
+        x_def = x_def.view( -1, self.input_dim )
+        x_ref = x_ref.view( -1, self.input_dim )
+
+        x = torch.cat([x_pdt, x_ref, x_def], 1).to(device)
+
+        x = F.relu(self.all_fc1(x), inplace=True)
+
+        for i in range(self.num_layers):
+            if not i == self.num_layers - 1:
+                x = self.lns[i](x)
+
         x = self.post_mp(x)
-        # return emb, F.log_softmax(x, dim=1)  # dim (int): A dimension along which log_softmax will be computed.
-        return F.log_softmax(x, dim=1)
+
+        return x
 
     def loss(self, pred, label):
         # CrossEntropyLoss torch.nn.CrossEntropyLoss
         # return F.nll_loss(pred, label)
+        # logger.info("pred: {}, label: {}".format(pred.shape, label.shape) )
+        # exit()
         return self.loss_layer(pred, label)
 
 
@@ -198,13 +219,12 @@ def test(loader, model, is_validation=False):
     y_pred = []
     for data in loader:
         with torch.no_grad():
-            emb, pred = model(data)
+            pred = model(data)
             # pred = pred.argmax(dim=1)
             label = data.y
 
+        _, pred = torch.max(pred.data, 1)
 
-        # pred = pred > 0.5
-        pred = pred.view(pred.shape[0]) > 0.5
         y_true.append(label.cpu())
         y_pred.append(pred.cpu())
         correct += pred.eq(label).sum().item()
@@ -247,14 +267,11 @@ def train(params, dataset, writer, plot=False, print_grad=False):
 
     data_size = len(dataset)
     print("data_size:", data_size)
-    nodes_sum = 0
-    edges_sum = 0
-    for data in dataset:
-        nodes_sum += data.num_nodes
-        edges_sum += data.num_edges
-    logger.info("data_size: %d, nodes_avg: %.4f, edges_sum: %.4f" % (data_size, nodes_sum/data_size, edges_sum/data_size))
-    # loader = DataLoader(dataset[:int(data_size * 0.8)], batch_size=BATCH_SIZE, shuffle=True)
-    loader = DataLoader(dataset[:800], batch_size=params['batch_size'], shuffle=True)
+    logger.info("data_size: {}".format(data_size) )
+
+
+    loader = DataLoader(dataset[:int(data_size * 0.8)], batch_size=params['batch_size'], shuffle=True)
+    # loader = DataLoader(dataset[:800], batch_size=params['batch_size'], shuffle=True)
 
     vali_loader = DataLoader(dataset[int(data_size * 0.8): int(data_size * 0.9)], batch_size=params['batch_size'], shuffle=True)
     test_loader = DataLoader(dataset[int(data_size * 0.9):], batch_size=params['batch_size'], shuffle=True)
@@ -270,7 +287,9 @@ def train(params, dataset, writer, plot=False, print_grad=False):
                      lp_w2v_path = params['lp_w2v_path'],
                      ns_length = params['ns_length'],
                      ns_dim=params['ns_dim'],
-                     ns_w2v_path= params['ns_w2v_path'])
+                     ns_w2v_path= params['ns_w2v_path'],
+                     batch_size= params['batch_size'],
+                     )
 
     # gpu_tracker = MemTracker()  # define a GPU tracker
     # gpu_tracker.track()
@@ -280,7 +299,7 @@ def train(params, dataset, writer, plot=False, print_grad=False):
 
     # gpu_tracker.track()
 
-    print("len(model.convs):", len(model.convs))
+    # print("len(model.convs):", len(model.convs))
 
     opt = optim.Adam(model.parameters(), lr=params['learning_rate'], weight_decay=5e-4)
     # opt = optim.SGD(model.parameters(), lr=LEARNING_RATE, momentum=0.9)
@@ -298,10 +317,10 @@ def train(params, dataset, writer, plot=False, print_grad=False):
         for batch in loader:
             # print(batch.train_mask, '----')
             opt.zero_grad() # 清空梯度
-            output = model(batch)
+            pred = model(batch)
 
-            pred = output.argmax(dim=1, keepdim=True)
-
+            # pred = pred.argmax(dim=1, keepdim=True)
+            # logger.info("pred: {}".format(pred))
             label = batch.y.to(device)
 
             # print("pred.shape : ",pred.shape)
@@ -340,6 +359,7 @@ def train(params, dataset, writer, plot=False, print_grad=False):
                 print("grad:")
                 print(para.grad)
 
+        logger.info("Epoch: {}, loss: {:.6f}".format(epoch, total_loss))
         if total_loss < min_valid_loss:
             # Saving State Dict
             # torch.save(model.state_dict(), MODEL_SAVE_PATH + "/gcn_model_epoch%d.pth" % epoch)
@@ -360,13 +380,17 @@ def train(params, dataset, writer, plot=False, print_grad=False):
 
         print_result("train", train_score, epoch)
         print_result("vali", vali_score, epoch)
+        # exit()
 
         # report intermediate result
-        nni.report_intermediate_result(vali_score['accuracy'])
+        # nni.report_intermediate_result(vali_score['accuracy'])
 
-        logger.info("w_pdt: {}, w_ref: {}, w_def: {}, w_lp: {}, w_ns: {}".format(model.w_pdt, model.w_ref, model.w_def, model.w_lp, model.w_ns))
+        # logger.info("w_pdt: {}, w_ref: {}, w_def: {}, w_lp: {}, w_ns: {}".format(model.w_pdt, model.w_ref, model.w_def, model.w_lp, model.w_ns))
 
         writer.add_scalar("test_accuracy", vali_score['accuracy'], epoch)
+
+    # report final result
+    # nni.report_final_result(vali_score['accuracy'])
 
     # Load
     # model = Net()
@@ -376,8 +400,7 @@ def train(params, dataset, writer, plot=False, print_grad=False):
         test_score = test(test_loader, model)
         print_result("test", test_score)
 
-        # report final result
-        nni.report_final_result(test_score['accuracy'])
+
 
     if plot:
         plt.plot(train_accuracies, label="Train accuracy")
@@ -594,9 +617,6 @@ class MyLargeDataset(Dataset):
         emb_file_pdt = params['embedding_path'] + "/all_func_embedding_pdt.csv"
         emb_file_pdt_keys = params['embedding_path'] + "/all_func_embedding_pdt_keys.txt"
 
-        emb_file_lp_combine = params['embedding_path'] + "/all_func_embedding_lp.pkl.combine"
-        emb_file_lp_greedy = params['embedding_path'] + "/all_func_embedding_lp.pkl.greedy"
-
         emb_file_ns = params['embedding_path'] + "/all_func_embedding_ns.pkl"
 
         # read files
@@ -606,9 +626,6 @@ class MyLargeDataset(Dataset):
         keys_index_ref = read_keys(emb_file_ref_keys)
         df_emb_pdt = pd.read_csv(emb_file_pdt).drop(columns=['type']).values
         keys_index_pdt = read_keys(emb_file_pdt_keys)
-
-        # emb_lp_combine = pickle.load(open(emb_file_lp_combine, "rb"))
-        # emb_lp_greedy = pickle.load(open(emb_file_lp_greedy, "rb"))
 
         emb_ns = pickle.load(open(emb_file_ns, "rb"))
 
@@ -658,83 +675,40 @@ class MyLargeDataset(Dataset):
 
                     funcs = read_relation_file(relation_file, deleted)
 
-
                     for func_key, attr in funcs.items():
-                        nodes, edge_index, edge_weight = attr['nodes'], attr['edge_index'], attr['edge_weight']
-                        if len(edge_index) == 0:
+                        if func_key not in keys_index_pdt.keys():
+                            continue
+                        if func_key not in keys_index_ref.keys():
+                            continue
+                        if func_key not in keys_index_def.keys():
                             continue
 
-                        edge_weight = torch.tensor(edge_weight, dtype=torch.float)
-                        edge_index = torch.tensor(edge_index, dtype=torch.long)
-                        if edge_index.shape[0] > 0:
-                            edge_index = edge_index - edge_index.min()
+                        x_pdt = torch.tensor(df_emb_pdt[keys_index_pdt[func_key]], dtype=torch.float)
+                        x_ref = torch.tensor(df_emb_ref[keys_index_ref[func_key]], dtype=torch.float)
+                        x_def = torch.tensor(df_emb_def[keys_index_def[func_key]], dtype=torch.float)
 
                         commit = func_key[:40]
                         y = 0 if commit in non_vul_commits else 1
-                        nodes_num = len(nodes)
-                        edges_num = len(edge_index)
 
-                        x_ns = torch.zeros([len(nodes), params['ns_length']], dtype=torch.long)
-                        x_ns_length = torch.zeros(len(nodes), dtype=torch.long)
-
-
-                        x_def = torch.zeros([len(nodes), params['input_dim']], dtype=torch.float)
-                        x_ref = torch.zeros([len(nodes), params['input_dim']], dtype=torch.float)
-                        x_pdt = torch.zeros([len(nodes), params['input_dim']], dtype=torch.float)
-                        flag = True
-                        for i, sub_func_key in enumerate(nodes):
-                            if sub_func_key not in emb_ns.keys():
-                                flag = False
-                                break
-                            if sub_func_key not in keys_index_def.keys():
-                                flag = False
-                                break
-                            if sub_func_key not in keys_index_ref.keys():
-                                flag = False
-                                break
-                            if sub_func_key not in keys_index_pdt.keys():
-                                flag = False
-                                break
-
-                            x_ns[i] = torch.tensor(emb_ns[sub_func_key]['word_idx'], dtype=torch.long)
-                            x_ns_length[i] = max(emb_ns[sub_func_key]['ns_length'], 1)
-
-                            # func_index = func2index[sub_func_key]
-                            x_def[i] = torch.tensor(df_emb_def[keys_index_def[sub_func_key]], dtype=torch.float)
-                            x_ref[i] = torch.tensor(df_emb_ref[keys_index_ref[sub_func_key]], dtype=torch.float)
-                            x_pdt[i] = torch.tensor(df_emb_pdt[keys_index_pdt[sub_func_key]], dtype=torch.float)
-                        if not flag:
-                            continue
-
-                        data = Data(num_nodes=x_ns.shape[0],
-                                    edge_index=edge_index.t().contiguous(),
-                                    edge_weight=edge_weight,
+                        data = Data(num_nodes=1,
                                     y=y,
-                                    x_def=x_def,
-                                    x_ref=x_ref,
                                     x_pdt=x_pdt,
-                                    # x_lp=x_lp,
-                                    # x_lp_length = x_lp_length,
-                                    x_ns=x_ns,
-                                    x_ns_length = x_ns_length
+                                    x_ref=x_ref,
+                                    x_def=x_def,
                                     )
 
-                        # if self.pre_filter is not None and not self.pre_filter(data):
-                        #    continue
-
-                        # if self.pre_transform is not None:
-                        #    data = self.pre_transform(data)
                         save_path = os.path.join(self.processed_dir, str(ii // 1000))
                         Path(save_path).mkdir(parents=True, exist_ok=True)
 
                         to_file = os.path.join(save_path, 'data_{}.pt'.format(ii))
                         torch.save(data, to_file)
-                        print("saved to: %s, vul: %d,nodes_num: %d, edges_num: %d" % (to_file, y, nodes_num, edges_num))
-                        logger.info("saved to: %s, vul: %d, nodes_num: %d, edges_num: %d" % (to_file, y, nodes_num, edges_num))
+
+                        logger.info("saved to: {}, vul: {}".format(to_file, y))
                         ii += 1
 
 
         # Read jiahao's data
+        """
         logger.info("Read jiahao's data")
         JIAHAO_DATA_PATH = "/data/jiahao_data"
         jh_entities_file = JIAHAO_DATA_PATH + "/jh_entities.json"
@@ -819,7 +793,7 @@ class MyLargeDataset(Dataset):
             logger.info(
                 "saved to: %s, vul: %d, nodes_num: %d, edges_num: %d" % (to_file, y, nodes_num, edges_num))
             ii += 1
-
+            """
     def len(self):
         return len(self.processed_file_names)
 
@@ -860,25 +834,31 @@ def get_params():
 
 
     args, _ = parser.parse_known_args()
-    print(args)
+    # print(args)
     return args
 
 if __name__ == '__main__':
     try:
-        writer = SummaryWriter("./log/" + datetime.now().strftime("%Y%m%d-%H%M%S"))
+
+        params = get_params()
 
         # get parameters form tuner
-        tuner_params = nni.get_next_parameter()
-        logger.debug(tuner_params)
-        params = vars(merge_parameter(get_params(), tuner_params))
-        print(params)
+        # tuner_params = nni.get_next_parameter()
+        # logger.debug(tuner_params)
+        # params = vars(merge_parameter(params, tuner_params))
+
+        params = vars(params)
+        logger.info("params: {}".format(params))
 
         # train
-        dataset_savepath = params['embedding_path'] + "/gcn_dataset"
+        dataset_savepath = params['embedding_path'] + "/automl_dataset"
         Path(dataset_savepath).mkdir(parents=True, exist_ok=True)
+        Path(params['model_save_path']).mkdir(parents=True, exist_ok=True)
+
         dataset = MyLargeDataset(dataset_savepath)
 
         logger.info("=== Train ===")
+        writer = SummaryWriter("./log/" + datetime.now().strftime("%Y%m%d-%H%M%S"))
         model = train(params, dataset, writer, plot=False, print_grad=False)
 
     except Exception as exception:
