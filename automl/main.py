@@ -1,3 +1,5 @@
+import numpy as np
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -15,7 +17,6 @@ import time
 from datetime import datetime
 
 import networkx as nx
-import numpy as np
 
 # from torch_geometric.datasets import TUDataset
 # from torch_geometric.datasets import Planetoid
@@ -133,46 +134,9 @@ class GNNStack(nn.Module):
         self.output_dim = output_dim
         self.batch_size = batch_size
 
-        # self.lp_path_num = lp_path_num
-        # self.lp_length = lp_length
-        # self.lp_dim = lp_dim
-        #
-        # self.ns_length = ns_length
-        # self.ns_dim = ns_dim
-
-        # self.lp_w2v_model = Word2Vec.load(lp_w2v_path)
-        # self.lp_embedding = nn.Embedding.from_pretrained(torch.FloatTensor(self.lp_w2v_model.wv.vectors))
-        # self.lp_gru = nn.GRU(input_size=lp_dim, hidden_size=lp_dim, num_layers=1, batch_first=True)
-        # self.lp_fc = nn.Linear(lp_dim * lp_path_num, input_dim)
-        #
-        # self.ns_w2v_model = Word2Vec.load(ns_w2v_path)
-        # self.ns_embedding = nn.Embedding.from_pretrained(torch.FloatTensor(self.ns_w2v_model.wv.vectors))
-        # self.ns_gru = nn.GRU(ns_dim, lp_dim, 1, batch_first=True)
-
-        # 1. concatenate 5 embeddings
-        self.all_fc1 = nn.Linear(input_dim * 3, hidden_dim)
-        self.hid = nn.Linear(hidden_dim, hidden_dim)
-        self.bn1 = nn.BatchNorm1d(num_features = hidden_dim)
-        #
-        self.all_fc2 = nn.Linear(hidden_dim, output_dim)
-        # self.bn2 = nn.BatchNorm1d(num_features=input_dim)
-
-        # or 2.soft weights
-        self.w_pdt = torch.nn.Parameter(torch.Tensor([1.0]))
-        self.w_ref = torch.nn.Parameter(torch.Tensor([1.0]))
-        self.w_def = torch.nn.Parameter(torch.Tensor([1.0]))
-        self.w_lp = torch.nn.Parameter(torch.Tensor([1.0]))
-        self.w_ns = torch.nn.Parameter(torch.Tensor([1.0]))
-
-        self.lns = nn.ModuleList()
-        self.lns.append(nn.LayerNorm(hidden_dim))
-        self.lns.append(nn.LayerNorm(hidden_dim))
-
-        # post-message-passing (PyTorch Geometric)
-        self.post_mp = nn.Sequential(
-            nn.Linear(hidden_dim, hidden_dim), nn.Dropout(0.25),
-            # nn.Linear(hidden_dim, hidden_dim), # 去掉 dropout
-            nn.Linear(hidden_dim, output_dim))
+        self.fc1 = nn.Linear(input_dim * 3, input_dim * 2)
+        self.fc2 = nn.Linear(input_dim * 2, hidden_dim)
+        self.fc3 = nn.Linear(hidden_dim, output_dim)
 
         self.num_layers = 3
         self.loss_layer = nn.CrossEntropyLoss()
@@ -192,14 +156,9 @@ class GNNStack(nn.Module):
 
         x = torch.cat([x_pdt, x_ref, x_def], 1).to(device)
 
-        x = F.relu(self.all_fc1(x), inplace=True)
-
-        for i in range(self.num_layers):
-            if not i == self.num_layers - 1:
-                x = self.lns[i](x)
-
-        x = self.post_mp(x)
-
+        x = F.relu(self.fc1(x))
+        x = F.relu(self.fc2(x))
+        x = self.fc3(x)
         return x
 
     def loss(self, pred, label):
@@ -608,8 +567,6 @@ class MyLargeDataset(Dataset):
 
     def process(self):
 
-        all_func_trees_json_file_merged = params['embedding_path'] + '/all_functions_with_trees_merged_jh.json'
-
         emb_file_def = params['embedding_path'] + "/all_func_embedding_def.csv"
         emb_file_def_keys = params['embedding_path'] + "/all_func_embedding_def_keys.txt"
         emb_file_ref = params['embedding_path'] + "/all_func_embedding_ref.csv"
@@ -638,162 +595,57 @@ class MyLargeDataset(Dataset):
         print("len(emb_ns):", len(emb_ns))
 
 
+        graphs_file = params['embedding_path'] + "/graphs.pkl"
+        logger.info("loading graphs from: {}".format(graphs_file))
+        with open(graphs_file, 'rb') as fh:
+            graphs = pickle.load(fh)
 
-        # 有些 function 无法生成 LP 和 NS，抛弃掉
-        deleted = []
-
-        ii = 0
-        with open(all_func_trees_json_file_merged, "r") as fr:
-            for line in fr.readlines():
-                l = line.strip()
-                # if l == "":
-                #     continue
-                func = json.loads(l)
-
-                func_key = func['func_key']
-                # func2index[func_key] = ii
-                if not (func_key in func_key in emb_ns.keys() and func_key in keys_index_def and func_key in keys_index_ref and func_key in keys_index_pdt):
-                    deleted.append(func_key)
-                ii += 1
-
-        logger.info("all functions: %d" % ii)
-        logger.info("=== no lp or ns functions: %d" % len(deleted))
+        vuls_num = 0
+        non_vul_num = 0
+        for g in graphs:
+            y = int(g['vul'])
+            if y == 1:
+                vuls_num += 1
 
         ii = 0
-        with open(params['tasks_file'], 'r') as taskFile:
-            taskDesc = json.load(taskFile)
+        for g in graphs:
+            func_key = g['func_key']
+            y = int(g['vul'])
 
-            for repoName in taskDesc:
-                project_path = params['functions_path'] + "/" + repoName
-
-                for cve_id, non_vul_commits in taskDesc[repoName]['vuln'].items():
-                    print(cve_id)
-                    relation_file = "%s/%s-relation.json" % (project_path, cve_id)
-                    if not os.path.exists(relation_file):
-                        logger.info("file not existed: %s" % relation_file)
-                        continue
-
-                    funcs = read_relation_file(relation_file, deleted)
-
-                    for func_key, attr in funcs.items():
-                        if func_key not in keys_index_pdt.keys():
-                            continue
-                        if func_key not in keys_index_ref.keys():
-                            continue
-                        if func_key not in keys_index_def.keys():
-                            continue
-
-                        x_pdt = torch.tensor(df_emb_pdt[keys_index_pdt[func_key]], dtype=torch.float)
-                        x_ref = torch.tensor(df_emb_ref[keys_index_ref[func_key]], dtype=torch.float)
-                        x_def = torch.tensor(df_emb_def[keys_index_def[func_key]], dtype=torch.float)
-
-                        commit = func_key[:40]
-                        y = 0 if commit in non_vul_commits else 1
-
-                        data = Data(num_nodes=1,
-                                    y=y,
-                                    x_pdt=x_pdt,
-                                    x_ref=x_ref,
-                                    x_def=x_def,
-                                    )
-
-                        save_path = os.path.join(self.processed_dir, str(ii // 1000))
-                        Path(save_path).mkdir(parents=True, exist_ok=True)
-
-                        to_file = os.path.join(save_path, 'data_{}.pt'.format(ii))
-                        torch.save(data, to_file)
-
-                        logger.info("saved to: {}, vul: {}".format(to_file, y))
-                        ii += 1
-
-
-        # Read jiahao's data
-        """
-        logger.info("Read jiahao's data")
-        JIAHAO_DATA_PATH = "/data/jiahao_data"
-        jh_entities_file = JIAHAO_DATA_PATH + "/jh_entities.json"
-        jh_relations_file = JIAHAO_DATA_PATH + "/jh_relations.json"
-        funcs = read_jh_relation_file(jh_entities_file, jh_relations_file, deleted)
-        for func_key, attr in funcs.items():
-            nodes, edge_index, edge_weight = attr['nodes'], attr['edge_index'], attr['edge_weight']
-            if len(edge_index) == 0:
-                logger.info("=== edge_index is empty: {}".format(func_key))
+            if y==0 and non_vul_num >= vuls_num:
                 continue
 
-            edge_weight = torch.tensor(edge_weight, dtype=torch.float)
-            edge_index = torch.tensor(edge_index, dtype=torch.long)
-            if edge_index.shape[0] > 0:
-                edge_index = edge_index - edge_index.min()
-
-            commit = func_key[:40]
-            y = 1
-            nodes_num = len(nodes)
-            edges_num = len(edge_index)
-
-            # x_lp = torch.zeros([len(nodes), LP_PATH_NUM, LP_LENGTH], dtype=torch.long)
-            # x_lp_length = torch.zeros([len(nodes), LP_PATH_NUM], dtype=torch.long)
-
-            x_ns = torch.zeros([len(nodes), params['ns_length']], dtype=torch.long)
-            x_ns_length = torch.zeros(len(nodes), dtype=torch.long)
-
-            x_def = torch.zeros([len(nodes), params['input_dim']], dtype=torch.float)
-            x_ref = torch.zeros([len(nodes), params['input_dim']], dtype=torch.float)
-            x_pdt = torch.zeros([len(nodes), params['input_dim']], dtype=torch.float)
-            flag = True
-            for i, sub_func_key in enumerate(nodes):
-                if sub_func_key not in emb_ns.keys():
-                    logger.info("=== no emb_ns key: {}".format(func_key))
-                    flag = False
-                    break
-                if sub_func_key not in keys_index_def.keys():
-                    logger.info("=== no keys_index_def key: {}".format(func_key))
-                    flag = False
-                    break
-                if sub_func_key not in keys_index_ref.keys():
-                    logger.info("=== no keys_index_ref key: {}".format(func_key))
-                    flag = False
-                    break
-                if sub_func_key not in keys_index_pdt.keys():
-                    logger.info("=== no keys_index_pdt key: {}".format(func_key))
-                    flag = False
-                    break
-
-                x_ns[i] = torch.tensor(emb_ns[sub_func_key]['word_idx'], dtype=torch.long)
-                x_ns_length[i] = max(emb_ns[sub_func_key]['ns_length'], 1)
-
-                # func_index = func2index[sub_func_key]
-                x_def[i] = torch.tensor(df_emb_def[keys_index_def[sub_func_key]], dtype=torch.float)
-                x_ref[i] = torch.tensor(df_emb_ref[keys_index_ref[sub_func_key]], dtype=torch.float)
-                x_pdt[i] = torch.tensor(df_emb_pdt[keys_index_pdt[sub_func_key]], dtype=torch.float)
-            if not flag:
+            if func_key not in keys_index_pdt.keys():
+                continue
+            if func_key not in keys_index_ref.keys():
+                continue
+            if func_key not in keys_index_def.keys():
                 continue
 
-            data = Data(num_nodes=x_ns.shape[0],
-                        edge_index=edge_index.t().contiguous(),
-                        edge_weight=edge_weight,
+            x_pdt = torch.tensor(df_emb_pdt[keys_index_pdt[func_key]], dtype=torch.float)
+            x_ref = torch.tensor(df_emb_ref[keys_index_ref[func_key]], dtype=torch.float)
+            x_def = torch.tensor(df_emb_def[keys_index_def[func_key]], dtype=torch.float)
+
+            data = Data(num_nodes=1,
                         y=y,
-                        x_def=x_def,
-                        x_ref=x_ref,
                         x_pdt=x_pdt,
-                        x_ns=x_ns,
-                        x_ns_length=x_ns_length
+                        x_ref=x_ref,
+                        x_def=x_def,
                         )
 
-            # if self.pre_filter is not None and not self.pre_filter(data):
-            #    continue
-
-            # if self.pre_transform is not None:
-            #    data = self.pre_transform(data)
             save_path = os.path.join(self.processed_dir, str(ii // 1000))
             Path(save_path).mkdir(parents=True, exist_ok=True)
 
             to_file = os.path.join(save_path, 'data_{}.pt'.format(ii))
             torch.save(data, to_file)
-            print("saved to: %s, vul: %d,nodes_num: %d, edges_num: %d" % (to_file, y, nodes_num, edges_num))
-            logger.info(
-                "saved to: %s, vul: %d, nodes_num: %d, edges_num: %d" % (to_file, y, nodes_num, edges_num))
+
+            if y==0:
+                non_vul_num += 1
             ii += 1
-            """
+
+            logger.info("saved to: {}, vul: {}".format(to_file, y))
+
+
     def len(self):
         return len(self.processed_file_names)
 
@@ -805,12 +657,12 @@ class MyLargeDataset(Dataset):
 def get_params():
     # args
     parser = argparse.ArgumentParser(description='Test for argparse')
-    parser.add_argument('--tasks_file', help='tasks_file', type=str, default='cflow/tasks.json')
+    parser.add_argument('--tasks_file', help='tasks_file', type=str, default='/data/function2vec3/tasks.json')
     parser.add_argument('--functions_path', help='functions_path', type=str,
-                        default=BASE_DIR + "/data/function2vec2/functions_jy")
-    parser.add_argument('--embedding_path', help='embedding_path', type=str, default=BASE_DIR + "/data/function2vec2")
-    parser.add_argument('--model_save_path', help='model_save_path', type=str, default=BASE_DIR + "/data/gcn_models")
-    parser.add_argument('--best_model_path', help='model_save_path', type=str, default="")
+                        default=BASE_DIR + "/data/function2vec3/functions_jy")
+    parser.add_argument('--embedding_path', help='embedding_path', type=str, default='/data/function2vec4')
+    parser.add_argument('--model_save_path', help='model_save_path', type=str, default='/data/automl_models')
+    parser.add_argument('--best_model_path', help='best_model_path', type=str, default="")
 
     parser.add_argument('--input_dim', help='input_dim', type=int, default=128)
     parser.add_argument('--output_dim', help='output_dim', type=int, default=2)
@@ -845,13 +697,13 @@ if __name__ == '__main__':
         # get parameters form tuner
         # tuner_params = nni.get_next_parameter()
         # logger.debug(tuner_params)
-        # params = vars(merge_parameter(params, tuner_params))
+        #params = vars(merge_parameter(params, tuner_params))
 
         params = vars(params)
-        logger.info("params: {}".format(params))
+        # logger.info("params: {}".format(params))
 
         # train
-        dataset_savepath = params['embedding_path'] + "/automl_dataset"
+        dataset_savepath = params['embedding_path'] + "/automl_dataset_1v1"
         Path(dataset_savepath).mkdir(parents=True, exist_ok=True)
         Path(params['model_save_path']).mkdir(parents=True, exist_ok=True)
 
