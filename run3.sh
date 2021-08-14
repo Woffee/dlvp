@@ -12,11 +12,12 @@
 #--tasks_file cflow/tasks.json \
 #--all_func_trees_file data/function2vec2/all_functions_with_trees.csv
 
-# Run GCN
-python gcn3.py --tasks_file /data/function2vec3/tasks.json \
+# Run
+python automl/main.py --tasks_file /data/function2vec3/tasks.json \
   --functions_path /data/function2vec3/functions_jy \
   --embedding_path /data/function2vec4 \
-  --model_save_path /data/gcn_models_p3 \
+  --model_save_path /data/automl_models \
+  --model_type GNNStack3 \
   --learning_rate 0.0001 \
   --epoch 200 \
   --input_dim 128 \

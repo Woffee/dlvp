@@ -1,8 +1,8 @@
 #!/bin/bash
 
-#SBATCH --job-name=gcn3
-#SBATCH --output=sbatch/%j.gcn3.out
-#SBATCH --error=sbatch/%j.gcn3.err
+#SBATCH --job-name=automl3
+#SBATCH --output=sbatch/%j.automl3.out
+#SBATCH --error=sbatch/%j.automl3.err
 
 #SBATCH  --partition=xye
 
@@ -14,5 +14,5 @@
 module load cuda
 module load singularity
 
-singularity exec --bind /xye_data_nobackup/wenbo/dlvp/data:/data --nv docker://woffee/keras:cflow_joern5 sh run3.sh
+singularity exec --bind /xye_data_nobackup/wenbo/dlvp/data:/data --nv docker://woffee/keras:cflow_joern6 sh run3.sh
 

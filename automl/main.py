@@ -42,28 +42,20 @@ try:
 except:
    import pickle
 
-import random
-random.seed(9)
 
+from model import GNNStack, GNNStack2, GNNStack3
+from data_loader import MyLargeDataset
 
 # import nni
 # from nni.utils import merge_parameter
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
+logger = None
 
-# log file
-now_time = time.strftime("%Y-%m-%d_%H-%M", time.localtime())
-logging.basicConfig(level=logging.INFO,
-                    format='%(asctime)s %(levelname)s %(filename)s line: %(lineno)s - %(message)s',
-                    datefmt='%Y-%m-%d %H:%M:%S',
-                    filename=BASE_DIR + '/../logs/' + now_time + '_automl.log')
-logger = logging.getLogger(__name__)
 
 # setting device on GPU if available, else CPU
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-print('# Using device:', device)
-logger.info("=== using device: %s" % str(device))
 
 #Additional Info when using cuda
 if device.type == 'cuda':
@@ -72,32 +64,6 @@ if device.type == 'cuda':
     # print('# Allocated:', round(torch.cuda.memory_allocated(0)/1024**3,1), 'GB')
     # print('# Cached:   ', round(torch.cuda.memory_reserved(0)/1024**3,1), 'GB')
 
-
-# EMBEDDING_PATH = args.embedding_path
-# MODEL_SAVE_PATH = args.model_save_path
-# BEST_MODEL_PATH = args.best_model_path
-# Path(MODEL_SAVE_PATH).mkdir(parents=True, exist_ok=True)
-#
-# FUNCTIONS_PATH = args.functions_path
-# TASKS_FILE = args.tasks_file
-#
-# INPUT_DIM = args.input_dim
-# OUTPUT_DIM = 1
-# HIDDEN_DIM = args.hidden_dim
-# BATCH_SIZE = args.batch_size
-# LEARNING_RATE = args.learning_rate
-# EPOCH = args.epoch
-#
-# # 每一个 function 的 LP 可表示为 (LP_PATH_NUM, LP_LENGTH, LP_DIM)
-# LP_PATH_NUM = args.lp_path_num
-# LP_LENGTH = args.lp_length
-# LP_DIM = args.lp_dim
-# LP_W2V_PATH = args.lp_w2v_path
-#
-# # NS
-# NS_LENGTH = args.ns_length
-# NS_DIM = args.ns_dim
-# NS_W2V_PATH = args.ns_w2v_path
 
 def plot_dataset(dataset):
     edges_raw = dataset.data.edge_index.numpy()
@@ -120,57 +86,6 @@ def myprint(s, is_log=0):
     print(s)
     if is_log>0:
         logger.info(s)
-
-class GNNStack(nn.Module):
-
-    def __init__(self, input_dim, hidden_dim, output_dim, lp_path_num, lp_length, lp_dim, lp_w2v_path, ns_length,
-                 ns_dim, ns_w2v_path, batch_size):
-        """
-        :param input_dim: max(dataset.num_node_features, 1)
-        :param hidden_dim: 128
-        :param output_dim: dataset.num_classes
-        :param task: 'node' or 'graph'
-        """
-        super(GNNStack, self).__init__()
-
-        self.input_dim = input_dim
-        self.hidden_dim = hidden_dim
-        self.output_dim = output_dim
-        self.batch_size = batch_size
-
-        self.fc1 = nn.Linear(input_dim * 3, input_dim * 2)
-        self.fc2 = nn.Linear(input_dim * 2, hidden_dim)
-        self.fc3 = nn.Linear(hidden_dim, output_dim)
-
-        self.num_layers = 3
-        self.loss_layer = nn.CrossEntropyLoss()
-
-
-    def forward(self, data):
-        data.to(device)
-
-        # DEF, REF, PDT, LP, NS --> x
-        # idx_lp, idx_ns, x_ref, x_def, x_pdt = data.x_lp, data.x_ns, data.x_ref, data.x_def, data.x_pdt
-
-        x_pdt, x_def, x_ref , batch = data.x_pdt, data.x_def, data.x_ref, data.batch
-
-        x_pdt = x_pdt.view( -1, self.input_dim )
-        x_def = x_def.view( -1, self.input_dim )
-        x_ref = x_ref.view( -1, self.input_dim )
-
-        x = torch.cat([x_pdt, x_ref, x_def], 1).to(device)
-
-        x = F.relu(self.fc1(x))
-        x = F.relu(self.fc2(x))
-        x = self.fc3(x)
-        return x
-
-    def loss(self, pred, label):
-        # CrossEntropyLoss torch.nn.CrossEntropyLoss
-        # return F.nll_loss(pred, label)
-        # logger.info("pred: {}, label: {}".format(pred.shape, label.shape) )
-        # exit()
-        return self.loss_layer(pred, label)
 
 
 
@@ -241,18 +156,15 @@ def train(params, dataset, writer, plot=False, print_grad=False):
 
 
     # build model
-    model = GNNStack(input_dim=params['input_dim'],
-                     hidden_dim=params['hidden_dim'],
-                     output_dim=params['output_dim'],
-                     lp_path_num = params['lp_path_num'],
-                     lp_length = params['lp_length'],
-                     lp_dim = params['lp_dim'],
-                     lp_w2v_path = params['lp_w2v_path'],
-                     ns_length = params['ns_length'],
-                     ns_dim=params['ns_dim'],
-                     ns_w2v_path= params['ns_w2v_path'],
-                     batch_size= params['batch_size'],
-                     )
+    if params['model_type'] == 'GNNStack2':
+        logger.info("loading model: GNNStack2")
+        model = GNNStack2(params)
+    elif params['model_type'] == 'GNNStack3':
+        logger.info("loading model: GNNStack3")
+        model = GNNStack3(params)
+    else:
+        logger.info("loading model: GNNStack")
+        model = GNNStack(params)
 
     # gpu_tracker = MemTracker()  # define a GPU tracker
     # gpu_tracker.track()
@@ -376,13 +288,7 @@ def train(params, dataset, writer, plot=False, print_grad=False):
 
     return model
 
-def findAllFile(base, full=False):
-    for root, ds, fs in os.walk(base):
-        for f in fs:
-            if full:
-                yield os.path.join(root, f)
-            else:
-                yield f
+
 
 def find_edges(func_key, relations_call, relations_callby, deleted, lv=0, call_type="all", nodes=[], edge_index=[], edge_weight=[]):
     if lv == 0:
@@ -536,142 +442,7 @@ def read_jh_relation_file(entities_file, relation_file, deleted):
         }
     return res
 
-def read_keys(keys_file):
-    keys_index = {}
-    ii = 0
-    with open(keys_file, "r") as f:
-        for line in f.readlines():
-            l = line.strip()
-            if l != "":
-                keys_index[l] = ii
-                ii += 1
-    return keys_index
 
-def get_1v1_graphs(graphs):
-    res = []
-
-    vuls = []
-    non_vuls = []
-
-    for g in graphs:
-        y = g['vul']
-        if y == 1:
-            vuls.append( g )
-        else:
-            non_vuls.append( g )
-
-    n = min( len(vuls), len(non_vuls) )
-    logger.info("vuls: {}, non_vuls: {}, n: {}".format( len(vuls), len(non_vuls), n ))
-
-    # 打乱顺序
-    random.shuffle( vuls )
-    random.shuffle( non_vuls )
-
-    for i in range(n):
-        res.append( vuls[i] )
-        res.append( non_vuls[i] )
-    return res
-
-class MyLargeDataset(Dataset):
-    def __init__(self, root="", transform=None, pre_transform=None):
-        self.save_path = root
-        super(MyLargeDataset, self).__init__(root, transform, pre_transform)
-
-    @property
-    def raw_file_names(self):
-        return []
-
-    @property
-    def processed_file_names(self):
-        res = []
-        for f in findAllFile(self.processed_dir, full=True):
-            if f.find("data_") >= 0 and f.endswith(".pt"):
-                pos = f.find("processed") + 10
-                res.append(f[pos:])
-        return res
-
-    def download(self):
-        # Download to `self.raw_dir`.
-        pass
-
-    def process(self):
-
-        emb_file_def = params['embedding_path'] + "/all_func_embedding_def.csv"
-        emb_file_def_keys = params['embedding_path'] + "/all_func_embedding_def_keys.txt"
-        emb_file_ref = params['embedding_path'] + "/all_func_embedding_ref.csv"
-        emb_file_ref_keys = params['embedding_path'] + "/all_func_embedding_ref_keys.txt"
-        emb_file_pdt = params['embedding_path'] + "/all_func_embedding_pdt.csv"
-        emb_file_pdt_keys = params['embedding_path'] + "/all_func_embedding_pdt_keys.txt"
-
-        emb_file_ns = params['embedding_path'] + "/all_func_embedding_ns.pkl"
-
-        # read files
-        df_emb_def = pd.read_csv(emb_file_def).drop(columns=['type']).values
-        keys_index_def = read_keys(emb_file_def_keys)
-        df_emb_ref = pd.read_csv(emb_file_ref).drop(columns=['type']).values
-        keys_index_ref = read_keys(emb_file_ref_keys)
-        df_emb_pdt = pd.read_csv(emb_file_pdt).drop(columns=['type']).values
-        keys_index_pdt = read_keys(emb_file_pdt_keys)
-
-        emb_ns = pickle.load(open(emb_file_ns, "rb"))
-
-        print("len(df_emb_def):", len(df_emb_def))
-        print("len(df_emb_ref):", len(df_emb_ref))
-        print("len(df_emb_pdt):", len(df_emb_pdt))
-
-        # print("len(emb_lp_combine):", len(emb_lp_combine))
-        # print("len(emb_lp_greedy):", len(emb_lp_greedy))
-        print("len(emb_ns):", len(emb_ns))
-
-
-        graphs_file = params['embedding_path'] + "/graphs.pkl"
-        logger.info("loading graphs from: {}".format(graphs_file))
-        with open(graphs_file, 'rb') as fh:
-            graphs = pickle.load(fh)
-
-        graphs = get_1v1_graphs(graphs)
-
-        ii = 0
-        for g in graphs:
-            func_key = g['func_key']
-            y = int(g['vul'])
-
-            if func_key not in keys_index_pdt.keys():
-                continue
-            if func_key not in keys_index_ref.keys():
-                continue
-            if func_key not in keys_index_def.keys():
-                continue
-
-            x_pdt = torch.tensor(df_emb_pdt[keys_index_pdt[func_key]], dtype=torch.float)
-            x_ref = torch.tensor(df_emb_ref[keys_index_ref[func_key]], dtype=torch.float)
-            x_def = torch.tensor(df_emb_def[keys_index_def[func_key]], dtype=torch.float)
-
-            data = Data(num_nodes=1,
-                        y=y,
-                        x_pdt=x_pdt,
-                        x_ref=x_ref,
-                        x_def=x_def,
-                        )
-
-            save_path = os.path.join(self.processed_dir, str(ii // 1000))
-            Path(save_path).mkdir(parents=True, exist_ok=True)
-
-            to_file = os.path.join(save_path, 'data_{}.pt'.format(ii))
-            torch.save(data, to_file)
-
-            ii += 1
-
-            logger.info("saved to: {}, vul: {}".format(to_file, y))
-
-
-    def len(self):
-        return len(self.processed_file_names)
-
-    def get(self, idx):
-        save_path = os.path.join(self.processed_dir, str(idx // 1000))
-        data = torch.load(os.path.join(save_path, 'data_{}.pt'.format(idx)))
-        return data
 
 def get_params():
     # args
@@ -683,6 +454,7 @@ def get_params():
     parser.add_argument('--model_save_path', help='model_save_path', type=str, default='/data/automl_models')
     parser.add_argument('--best_model_path', help='best_model_path', type=str, default="")
 
+    parser.add_argument('--model_type', help='model_type', type=str, default="GNNStack")
     parser.add_argument('--input_dim', help='input_dim', type=int, default=128)
     parser.add_argument('--output_dim', help='output_dim', type=int, default=2)
     parser.add_argument('--hidden_dim', help='hidden_dim', type=int, default=64)
@@ -724,11 +496,26 @@ if __name__ == '__main__':
         # train
         # /xye_data_nobackup/wenbo/dlvp/data/function2vec4/automl_dataset_1v1/
 
+        # log file
+        now_time = time.strftime("%Y-%m-%d_%H-%M", time.localtime())
+        log_file = "{}/../logs/{}_{}.log".format(BASE_DIR, now_time, params['model_type'])
+
+        logging.basicConfig(level=logging.INFO,
+                            format='%(asctime)s %(levelname)s %(filename)s line: %(lineno)s - %(message)s',
+                            datefmt='%Y-%m-%d %H:%M:%S',
+                            filename=log_file)
+        logger = logging.getLogger(__name__)
+
+        # Device
+        print('# Using device:', device)
+        logger.info("=== using device: %s" % str(device))
+
+
         dataset_savepath = params['embedding_path'] + "/automl_dataset_1v1"
         Path(dataset_savepath).mkdir(parents=True, exist_ok=True)
         Path(params['model_save_path']).mkdir(parents=True, exist_ok=True)
 
-        dataset = MyLargeDataset(dataset_savepath)
+        dataset = MyLargeDataset(dataset_savepath, params)
 
         logger.info("=== Train ===")
         writer = SummaryWriter("./log/" + datetime.now().strftime("%Y%m%d-%H%M%S"))

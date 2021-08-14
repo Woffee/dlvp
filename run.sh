@@ -13,10 +13,11 @@
 #--all_func_trees_file data/function2vec2/all_functions_with_trees.csv
 
 # Run GCN
-python gcn.py --tasks_file /data/function2vec3/tasks.json \
+python automl/main.py --tasks_file /data/function2vec3/tasks.json \
   --functions_path /data/function2vec3/functions_jy \
   --embedding_path /data/function2vec4 \
-  --model_save_path /data/gcn_models_p1 \
+  --model_save_path /data/automl_models \
+  --model_type GNNStack \
   --learning_rate 0.0001 \
   --epoch 200 \
   --input_dim 128 \
@@ -29,3 +30,8 @@ python gcn.py --tasks_file /data/function2vec3/tasks.json \
   --ns_length 2000 \
   --ns_dim 128 \
   --ns_w2v_path /data/function2vec4/models/w2v_ns.bin
+
+#nnictl create --config automl/config.yml
+#python automl/keep_alive.py
+
+#python automl/main.py
