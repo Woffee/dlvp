@@ -42,6 +42,10 @@ try:
 except:
    import pickle
 
+import random
+random.seed(9)
+
+
 # import nni
 # from nni.utils import merge_parameter
 
@@ -543,6 +547,31 @@ def read_keys(keys_file):
                 ii += 1
     return keys_index
 
+def get_1v1_graphs(graphs):
+    res = []
+
+    vuls = []
+    non_vuls = []
+
+    for g in graphs:
+        y = g['vul']
+        if y == 1:
+            vuls.append( g )
+        else:
+            non_vuls.append( g )
+
+    n = min( len(vuls), len(non_vuls) )
+    logger.info("vuls: {}, non_vuls: {}, n: {}".format( len(vuls), len(non_vuls), n ))
+
+    # 打乱顺序
+    random.shuffle( vuls )
+    random.shuffle( non_vuls )
+
+    for i in range(n):
+        res.append( vuls[i] )
+        res.append( non_vuls[i] )
+    return res
+
 class MyLargeDataset(Dataset):
     def __init__(self, root="", transform=None, pre_transform=None):
         self.save_path = root
@@ -600,20 +629,12 @@ class MyLargeDataset(Dataset):
         with open(graphs_file, 'rb') as fh:
             graphs = pickle.load(fh)
 
-        vuls_num = 0
-        non_vul_num = 0
-        for g in graphs:
-            y = int(g['vul'])
-            if y == 1:
-                vuls_num += 1
+        graphs = get_1v1_graphs(graphs)
 
         ii = 0
         for g in graphs:
             func_key = g['func_key']
             y = int(g['vul'])
-
-            if y==0 and non_vul_num >= vuls_num:
-                continue
 
             if func_key not in keys_index_pdt.keys():
                 continue
@@ -639,8 +660,6 @@ class MyLargeDataset(Dataset):
             to_file = os.path.join(save_path, 'data_{}.pt'.format(ii))
             torch.save(data, to_file)
 
-            if y==0:
-                non_vul_num += 1
             ii += 1
 
             logger.info("saved to: {}, vul: {}".format(to_file, y))
@@ -703,6 +722,8 @@ if __name__ == '__main__':
         # logger.info("params: {}".format(params))
 
         # train
+        # /xye_data_nobackup/wenbo/dlvp/data/function2vec4/automl_dataset_1v1/
+
         dataset_savepath = params['embedding_path'] + "/automl_dataset_1v1"
         Path(dataset_savepath).mkdir(parents=True, exist_ok=True)
         Path(params['model_save_path']).mkdir(parents=True, exist_ok=True)
